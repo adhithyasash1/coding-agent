@@ -1,5 +1,8 @@
 # coding-agent
 
+## Architecture
+![coding-agent architecture](coding-agent.png)
+
 A small, readable coding agent for learning how agents are actually engineered.
 It's a **model-driven tool-calling loop**: you give it a task, and the model
 explores the repo, edits code, and runs the tests to fix a failing test —
