@@ -1,0 +1,26 @@
+[model]
+name = "select-model-before-live-testing"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "AGENT_API_KEY"
+context_tokens = 32768
+max_output_tokens = 4096
+timeout = 60.0
+revision = "select-and-pin-model-revision"
+temperature = 0.0
+top_p = 1.0
+seed = 0
+
+[run]
+max_turns = 50
+max_tokens = 100000
+max_seconds = 1200.0
+supervision = "shadow"
+max_interventions = 3
+supervisor_max_tokens = 1024
+supervisor_cooldown = 4
+repeat_threshold = 3
+command_timeout = 60.0
+require_verification = true
+
+# Optional [supervisor_model] accepts the same fields as [model].
+# Omit it to use the worker model in a separate supervisor context.
