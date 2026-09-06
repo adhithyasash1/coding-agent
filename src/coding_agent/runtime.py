@@ -31,8 +31,10 @@ dependency is necessary, make its installation reproducible in the intended runt
 Verify each deliverable through its expected entry point and interpreter; an interactive
 environment's installed packages may not be available to the eventual caller.
 Preserve failing exit codes in verification commands, including pipelines and cleanup.
-The shell is /bin/sh; invoke Bash explicitly when using Bash syntax. Complete the requested
-behavior without adding unrelated features or repeatedly checking already established facts.
+The shell is /bin/sh; invoke Bash explicitly when using Bash syntax. After a successful
+verify=true check of the current workspace, submit without further workspace mutations,
+including permission-only changes. Complete the requested behavior without adding
+unrelated features or repeatedly checking already established facts.
 """
 
 

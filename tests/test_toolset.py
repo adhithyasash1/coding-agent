@@ -54,3 +54,22 @@ def test_verification_does_not_accept_test_that_changes_workspace(tmp_path):
         assert not result.metadata["verification"]
     finally:
         tools.close()
+
+
+def test_edit_file_create_omits_old(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    tools = WorkspaceTools(work, tmp_path / "outputs")
+    try:
+        created = tools.execute(
+            ToolCall("1", "edit_file", {"path": "new.txt", "new": "hello", "create": True})
+        )
+        assert created.status == "ok"
+        assert (work / "new.txt").read_text() == "hello"
+        missing = tools.execute(ToolCall("2", "edit_file", {"path": "missing.txt", "new": "x"}))
+        assert missing.status == "error"
+        existing = tools.execute(ToolCall("3", "edit_file", {"path": "new.txt", "new": "nope"}))
+        assert existing.status == "error"
+        assert (work / "new.txt").read_text() == "hello"
+    finally:
+        tools.close()

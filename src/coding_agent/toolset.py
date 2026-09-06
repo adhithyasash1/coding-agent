@@ -175,14 +175,14 @@ class WorkspaceTools:
             _schema(
                 "edit_file",
                 "Atomically replace one exact match of old with new. "
-                "To create a missing file, set create=true and old to an empty string.",
+                "To create a missing file, set create=true; old may be omitted or empty.",
                 {
                     "path": dict(_STRING),
                     "old": dict(_STRING),
                     "new": dict(_STRING),
                     "create": dict(_BOOLEAN),
                 },
-                ["path", "old", "new"],
+                ["path", "new"],
             ),
             _schema(
                 "run_command",
@@ -342,7 +342,7 @@ class WorkspaceTools:
 
     def _edit_file(self, arguments: dict[str, Any]) -> ToolResult:
         path = self._path(_text(arguments, "path"))
-        old, new = _text(arguments, "old"), _text(arguments, "new")
+        old, new = _text(arguments, "old", ""), _text(arguments, "new")
         create = _boolean(arguments, "create")
         if path.exists():
             with path.open(encoding="utf-8", newline="") as stream:

@@ -35,9 +35,20 @@ class HarborRuntime(Agent):
 
 
 class HarborTools:
-    def __init__(self, environment, loop, root, workspace, outputs, timeout, service_deadline):
+    def __init__(
+        self,
+        environment,
+        loop,
+        root,
+        workspace,
+        outputs,
+        timeout,
+        service_deadline,
+        python="python3",
+    ):
         self.environment, self.loop, self.root = environment, loop, root
         self.workspace, self.outputs, self.timeout = workspace, outputs, timeout
+        self.python = python
         self._revision = ""
         self.closed = False
         self.deadline = float("inf")
@@ -60,7 +71,7 @@ class HarborTools:
         remaining = max(1, min(self.timeout + 15, self.deadline - time.monotonic()))
         command = shlex.join(
             [
-                "python3",
+                self.python,
                 "-m",
                 "coding_agent.remote_server",
                 "--socket",
@@ -142,6 +153,7 @@ class AdaptiveAgent(BaseAgent):
             raise ValueError("service_lifetime_sec must be positive and finite")
         self.workspace = workspace
         self.commit_patch = commit_patch
+        self.tool_python = "python3"
         self.root = "/tmp/ca-" + uuid.uuid4().hex[:12]
         self.result: dict[str, Any] | None = None
         if self.model_name and self.model_name != self.config.model.name:
@@ -155,23 +167,19 @@ class AdaptiveAgent(BaseAgent):
         return coding_agent.__version__
 
     async def setup(self, environment) -> None:
-        check = await environment.exec(
-            command="python3 -c 'import sys; assert sys.version_info >= (3,11)'", timeout_sec=10
-        )
-        if check.return_code:
-            raise RuntimeError("Task image needs Python 3.11+ for tool execution")
         if self.workspace is None:
             result = await environment.exec(command="pwd", timeout_sec=10)
             self.workspace = result.stdout.strip()
         if self.workspace == "/":
             raise ValueError("Set --ak workspace to the task checkout, not filesystem root")
         await environment.exec(command=shlex.join(["mkdir", "-p", self.root]), timeout_sec=10)
+        self.tool_python = await self._tool_python(environment)
         await environment.upload_dir(
             Path(coding_agent.__file__).parent, f"{self.root}/coding_agent"
         )
         command = shlex.join(
             [
-                "python3",
+                self.tool_python,
                 "-m",
                 "coding_agent.remote_server",
                 "--socket",
@@ -201,6 +209,40 @@ class AdaptiveAgent(BaseAgent):
             await asyncio.sleep(0.1)
         raise RuntimeError("Tool server did not become ready")
 
+    async def _tool_python(self, environment) -> str:
+        version = await environment.exec(
+            command="python3 -c 'import sys; print(\"%d.%d\" % sys.version_info[:2])'",
+            timeout_sec=10,
+        )
+        if version.return_code == 0:
+            try:
+                major, minor = (
+                    int(part) for part in version.stdout.strip().splitlines()[-1].split(".")
+                )
+            except ValueError:
+                major, minor = 0, 0
+            if (major, minor) >= (3, 11):
+                return "python3"
+        await environment.exec(
+            command=shlex.join(["mkdir", "-p", f"{self.root}/python"]), timeout_sec=10
+        )
+        root = shlex.quote(self.root + "/python")
+        installed = await environment.exec(
+            command=(
+                'export PATH="$HOME/.local/bin:$PATH"; '
+                f"export UV_PYTHON_INSTALL_DIR={root}; "
+                "uv python install 3.12 && python3 -c "
+                '"import glob,sys; matches=glob.glob('
+                f"{self.root + '/python'!r}+'/**/bin/python3', recursive=True); "
+                'sys.exit(1) if not matches else print(matches[0])"'
+            ),
+            timeout_sec=180,
+        )
+        path = installed.stdout.strip().splitlines()[-1] if installed.stdout.strip() else ""
+        if installed.return_code or not path:
+            raise RuntimeError("Task image needs Python 3.11+ for tool execution")
+        return path
+
     async def run(self, instruction, environment, context) -> None:
         loop = asyncio.get_running_loop()
         outputs = self.logs_dir / "harness" / "outputs"
@@ -228,6 +270,7 @@ class AdaptiveAgent(BaseAgent):
                 outputs,
                 self.config.run.command_timeout,
                 self.service_deadline,
+                self.tool_python,
             )
             supervisor = (
                 OpenAIModel(self.config.supervisor_model) if self.config.supervisor_model else None

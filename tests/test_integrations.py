@@ -348,6 +348,62 @@ class HarborIntegration(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "transport is closed"):
             tools.rpc("revision")
 
+    def test_tool_python_uses_image_when_recent(self):
+        from integrations.harbor_agent import AdaptiveAgent
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "agent.toml"
+            settings.write_text("")
+            agent = AdaptiveAgent(
+                logs_dir=Path(directory) / "logs", config=str(settings), workspace="/work"
+            )
+
+            class Env:
+                async def exec(self, command, timeout_sec=10):
+                    return SimpleNamespace(return_code=0, stdout="3.13\n", stderr="")
+
+            self.assertEqual(asyncio.run(agent._tool_python(Env())), "python3")
+
+    def test_tool_python_installs_private_interpreter(self):
+        from integrations.harbor_agent import AdaptiveAgent
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "agent.toml"
+            settings.write_text("")
+            agent = AdaptiveAgent(
+                logs_dir=Path(directory) / "logs", config=str(settings), workspace="/work"
+            )
+            sidecar = f"{agent.root}/python/cpython/bin/python3"
+
+            class Env:
+                async def exec(self, command, timeout_sec=10):
+                    if "sys.version_info" in command:
+                        return SimpleNamespace(return_code=0, stdout="3.9\n", stderr="")
+                    if "uv python install" in command:
+                        return SimpleNamespace(return_code=0, stdout=sidecar + "\n", stderr="")
+                    return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+            self.assertEqual(asyncio.run(agent._tool_python(Env())), sidecar)
+
+    def test_tool_python_fails_when_sidecar_unavailable(self):
+        from integrations.harbor_agent import AdaptiveAgent
+
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "agent.toml"
+            settings.write_text("")
+            agent = AdaptiveAgent(
+                logs_dir=Path(directory) / "logs", config=str(settings), workspace="/work"
+            )
+
+            class Env:
+                async def exec(self, command, timeout_sec=10):
+                    if "sys.version_info" in command:
+                        return SimpleNamespace(return_code=0, stdout="3.9\n", stderr="")
+                    return SimpleNamespace(return_code=1, stdout="", stderr="uv missing")
+
+            with self.assertRaisesRegex(RuntimeError, "Python 3.11"):
+                asyncio.run(agent._tool_python(Env()))
+
     def test_service_lifetime_must_be_bounded(self):
         from integrations.harbor_agent import AdaptiveAgent
 
