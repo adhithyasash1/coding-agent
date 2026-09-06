@@ -87,7 +87,14 @@ image = (
         f"flashinfer-jit-cache=={FLASHINFER}", index_url="https://flashinfer.ai/whl/cu130"
     )
     # The FlashInfer sampler is another JIT path; the PyTorch sampler is fine at one sequence.
-    .env(config | {"VLLM_USE_FLASHINFER_SAMPLER": "0"})
+    .env(
+        config
+        | {
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            # The dense FP8 path uses CUTLASS. Avoid warming unused DeepGEMM shapes.
+            "VLLM_DEEP_GEMM_WARMUP": "skip",
+        }
+    )
 )
 cache = modal.Volume.from_name("adaptive-agent-model-cache", create_if_missing=True)
 
