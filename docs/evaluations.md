@@ -10,8 +10,10 @@ Graded development trials and their limits are recorded in
 The external adapter implements `harbor.agents.base.BaseAgent`. Model calls and the
 authoritative trace writer run in the host evaluation process. A small tool server
 runs in the task environment via `BaseEnvironment.exec`; it retains managed process
-state between calls. The adapter uploads Python source requiring Python 3.11+.
-Task images without that interpreter need an explicit setup image before evaluation.
+state between calls. The adapter uploads Python source requiring Python 3.11+. If the task image's
+`python3` is older, setup installs a private CPython under the adapter's `/tmp/ca-*`
+tree with the image's `uv` and uses that interpreter only for the tool server.
+Worker commands keep the image `python3` so the benchmark test environment is unchanged.
 
 ```sh
 uv venv .venv-eval
