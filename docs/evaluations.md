@@ -2,7 +2,8 @@
 
 The official graders remain separate from the agent. The worker and supervisor
 receive the task and allowed task workspace, never hidden tests or reference solutions.
-No official benchmark scores have been measured for this new implementation.
+Graded development trials and their limits are recorded in
+[the evaluation report](EVALUATION_REPORT.md); they are not full-suite scores.
 
 ## Harbor and Terminal-Bench
 
@@ -14,18 +15,18 @@ Task images without that interpreter need an explicit setup image before evaluat
 
 ```sh
 uv venv .venv-eval
-uv pip install --python .venv-eval/bin/python -e . 'harbor==0.22.0' 'modal==1.5.5'
+uv pip install --python .venv-eval/bin/python -e . 'harbor[modal]==0.22.0' 'modal==1.5.5'
 .venv-eval/bin/python -m unittest discover -s tests -p test_integrations.py -v
 .venv-eval/bin/harbor run \
   --agent integrations.harbor_agent:AdaptiveAgent \
   --ak config=agent.local.toml --n-concurrent 1 --max-retries 0 --print-config
 ```
 
-After confirming model connectivity and the specific task environment, run a small
-Terminal-Bench 2.1 selection using the pinned dataset reference supported by your
-Harbor registry. Add `-d 'terminal-bench@2.1'` to the command and remove `--print-config`.
-Inspect the dataset's task names before selecting a smoke task. Full-suite and cloud
-runs are deferred until the first smoke task and spending checks pass.
+Set `PYTHONPATH` to this checkout when launching Harbor so it can import the external
+adapter. Use the exact Git reference and task filters in
+[the frozen sample](sample-selection.md). The inspected legacy registry does not
+contain `terminal-bench@2.1`. Keep the verifier enabled, distinguish shortened smoke
+limits from official limits, and review spending before expanding the task count.
 
 `--ak workspace=/path/in/task/container` overrides the environment's working directory.
 Do not use `/` as the workspace. Set this to the actual checkout. Tool artifacts are
@@ -95,10 +96,25 @@ development and holdout task lists fixed and disclose any overlap.
 Compare repeated paired runs at equal total allowance. Include worker-only and
 fixed-reminder controls before crediting the supervisor. Report official solve rate
 separately for each benchmark, alongside regressions, stop reasons, infrastructure
-errors, latency, cost, and uncertainty. The initial $20 session is for smoke testing,
+errors, latency, cost, and uncertainty. The initial $30 allowance is for smoke testing,
 not enough evidence to claim a reliable score improvement.
 
 References: [Harbor agent API](https://www.harborframework.com/docs/agents),
 [DeepSWE](https://github.com/datacurve-ai/deep-swe),
 [Pier](https://github.com/datacurve-ai/pier), and
 [SWE-bench evaluation](https://www.swebench.com/SWE-bench/guides/evaluation/).
+
+## Services and post-run artifacts
+
+Harbor grades after the worker returns. Its tool transport therefore detaches at
+worker completion, leaving services under sandbox ownership. The remote-server
+lifetime defaults to the worker allowance plus 720 seconds, measured from setup;
+override `service_lifetime_sec` through adapter kwargs for longer verifier windows.
+The sandbox timeout must also cover setup, worker execution and grading. An omitted
+`start_process` timeout uses the remaining service lifetime. Explicit timeouts keep
+their normal worker-budget cap. Local CLI cleanup remains immediate.
+
+If the sandbox disappears, optional artifact downloads record errors separately and
+do not overwrite the host's primary failure or finalized trace. Keep a host running
+for the duration of client-driven cloud trials: host sleep does not pause cloud
+sandbox deadlines. Use bounded sleep inhibition on laptops during a paid run.

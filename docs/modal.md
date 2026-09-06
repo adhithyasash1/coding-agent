@@ -1,8 +1,9 @@
-# Modal setup and the first $20
+# Modal setup and the $30 development evaluation
 
-No cloud resources have been started. Model choice, GPU fit, parser compatibility,
-and live execution remain to be tested. Keep the inference service separate from
-CPU task sandboxes. Local traces work without LangSmith credentials.
+Qwen3.8-27B FP8 has passed live model/tool and repair smoke tests on one H100.
+See [the evaluation report](EVALUATION_REPORT.md) for graded outcomes, spending,
+and resource state. Keep inference separate from CPU task sandboxes. Local traces
+work without LangSmith credentials.
 
 Create an isolated environment and log in when ready:
 
@@ -56,6 +57,8 @@ The devel base supplies the toolkit; `flashinfer-cubin` and `flashinfer-jit-cach
 `--gdn-prefill-backend triton` remove the two compile paths that the log named.
 Watch the first boot log and stop the app on the first `exited during startup`
 line; do not leave a client request pending against a failing image.
+`VLLM_DEEP_GEMM_WARMUP=skip` avoids warming unused DeepGEMM shapes on the selected
+dense CUTLASS FP8 path. The option was checked against vLLM 0.28.0 source.
 Copy the displayed development endpoint into `model.base_url`, adding `/v1`, and set
 the same endpoint key as `AGENT_API_KEY` in the terminal running the harness.
 Keep the model name and revision in the config aligned with the service.
@@ -68,16 +71,17 @@ Before the first live session, check current pricing for the chosen GPU and esti
 `hourly rate * session seconds / 3600`, then add CPU/RAM, startup and storage margin.
 Start with a small smoke session targeting at most $3-$5, concurrency one, and keep
 the remaining credit for diagnosing failures. Stop and inspect billing after that
-session before increasing the task count. A $20 credit is not enough to assume a
+session before increasing the task count. The current working ceiling is $24 within
+the user's $30 allowance. That allowance is not enough to assume a
 complete run across three benchmarks.
 
 The 900-second serve session and container limits reduce exposure but do not implement
 an account-wide hard spending cap. Do not run a permanent `modal deploy` yet.
 Confirm the app has stopped in the dashboard after the foreground session ends.
 
-Validated locally with Modal SDK 1.5.5: imports, decorator construction, and mocked
-server startup with a dummy secret. GPU startup, model loading, tool parsing, endpoint
-authentication and billing remain unverified.
+Validated with Modal SDK 1.5.5: local contract tests plus live GPU startup, model
+loading, native tool parsing, endpoint authentication, and a billing read. These checks
+do not establish general model quality; use the report's measured task outcomes.
 
 References: [Modal inference example](https://modal.com/docs/examples/vllm_inference),
 [serve CLI](https://modal.com/docs/cli/latest/serve),

@@ -1,8 +1,12 @@
 # Trace and recovery contract
 
 Local traces are the source of truth. LangSmith is not required and no telemetry
-is uploaded automatically. A future exporter can use the ordered event IDs to
-create parent/child runs without making cloud tracing a runtime dependency.
+is uploaded automatically. `integrations/langsmith_export.py` explicitly exports
+ordered events as parent/child runs without making cloud tracing a runtime dependency.
+Stable IDs allow retries. HTTP 409 is reconciled per span, confirming existing
+identities and submitting missing spans; a root alone does not prove completeness.
+Accepted ingestion can precede visible persistence. Grader rewards are attached
+separately from worker submission status.
 
 Each new run directory contains:
 
@@ -74,5 +78,11 @@ then start a new run with explicit recovered context. Preserve the original trac
 Verification binds to a content-and-mode hash, excluding Git internals and common
 runtime caches. A successful `verify=true` command counts only when it leaves this
 revision unchanged. This records evidence; it cannot determine whether a test was
-meaningful. Background processes are killed on cleanup. Revision scanning currently
+meaningful. Local background processes are killed on cleanup. In Harbor, transport close
+detaches so required services survive for grading; sandbox teardown or the bounded
+server lifetime kills them. Omitted background timeouts use that lifetime, while
+explicit timeouts remain bounded by the worker runtime. The environment event
+records the cleanup strategy and lifetime. Cleanup/revision errors preserve primary
+failures and the final trace; they turn an otherwise successful run into runtime_error.
+Optional Harbor download errors are stored separately. Revision scanning currently
 hashes workspace files in full; large repositories may warrant measured caching.

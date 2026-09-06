@@ -2,7 +2,8 @@
 
 A fresh Python harness with one coding worker and an optional, bounded supervisor.
 It is model-independent through an OpenAI-compatible endpoint. No model weights,
-cloud credentials, or benchmark results are included.
+cloud credentials, or raw benchmark artifacts are included. Development measurements
+and their limitations are recorded in [the evaluation report](docs/EVALUATION_REPORT.md).
 
 ## Start locally
 
@@ -83,11 +84,14 @@ Every run has ordered, flushed JSONL events, full tool-output files, diagnostic
 checkpoints, and a final result. See [trace semantics](docs/tracing.md) for redaction,
 budgets, failure recovery, and the distinction between a checkpoint and safe resume.
 
-## Next live checks
+## Live evaluation
 
-Use [Modal setup](docs/modal.md) when model selection and credentials are ready.
-The $20 credit is reserved for a small smoke test and fixes first. There have been
-no live Modal or official benchmark runs for this implementation. Docker transport
+Qwen3.8-27B FP8 is the [initial model choice](docs/model-selection.md).
+The authorized $30 Modal allowance covers a small development sample and fixes,
+with a $24 working ceiling. Model/tool and repair smoke tests have passed; graded
+Terminal-Bench trials are recorded in [the report](docs/EVALUATION_REPORT.md).
+See [Modal setup](docs/modal.md) and [the frozen sample](docs/sample-selection.md).
+Docker transport
 requires a running daemon; its CLI arguments and shared tool protocol are locally
 tested, but container execution has not yet been validated on this machine.
 
