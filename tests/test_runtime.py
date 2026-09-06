@@ -181,3 +181,75 @@ def test_nonstring_supervisor_action_is_ignored(tmp_path):
     )
     assert result["status"] == "budget_exhausted"
     assert any(e["kind"] == "supervisor_failed" for e in events)
+
+
+@pytest.mark.parametrize("revision_fails", [False, True])
+def test_cleanup_failure_preserves_model_failure_and_final_trace(tmp_path, revision_fails):
+    class BrokenCleanup(WorkspaceTools):
+        cleanup_attempted = False
+
+        def close(self):
+            super().close()
+            self.cleanup_attempted = True
+            raise RuntimeError("remoteRPCNotFound")
+
+        def revision(self):
+            if self.cleanup_attempted and revision_fails:
+                raise RuntimeError("sandbox disappeared")
+            return super().revision()
+
+    work = tmp_path / "work"
+    work.mkdir()
+    log = EventLog(tmp_path / "trace")
+    tools = BrokenCleanup(work, tmp_path / "outputs")
+    try:
+        result = Agent(Config(), ScriptedModel([]), tools, log).run("Fail the model")
+    finally:
+        log.close()
+    assert result["status"] == "model_error"
+    assert result["detail"] == "Scripted model has no replies remaining"
+    assert json.loads((log.directory / "result.json").read_text()) == result
+    events = read_events(log.directory / "events.jsonl")
+    kinds = [event["kind"] for event in events]
+    assert "model_failed" in kinds
+    assert "cleanup_failed" in kinds
+    assert "cleanup_finished" not in kinds
+    assert kinds[-1] == "run_finished"
+    assert ("revision_failed" in kinds) == revision_fails
+    assert bool(result["revision"]) != revision_fails
+
+
+@pytest.mark.parametrize("failure", ["cleanup", "revision"])
+def test_finalization_failure_does_not_report_submission_success(tmp_path, failure):
+    class BrokenFinalization(WorkspaceTools):
+        closed = False
+
+        def close(self):
+            super().close()
+            self.closed = True
+            if failure == "cleanup":
+                raise RuntimeError("cannot stop service")
+
+        def revision(self):
+            if self.closed and failure == "revision":
+                raise RuntimeError("cannot read revision")
+            return super().revision()
+
+    work = tmp_path / "work"
+    work.mkdir()
+    log = EventLog(tmp_path / "trace")
+    tools = BrokenFinalization(work, tmp_path / "outputs")
+    model = ScriptedModel(
+        [
+            reply(ToolCall("verify", "run_command", {"command": "true", "verify": True})),
+            reply(ToolCall("submit", "submit", {"summary": "done"})),
+        ]
+    )
+    try:
+        result = Agent(Config(), model, tools, log).run("Submit")
+    finally:
+        log.close()
+    assert result["status"] == "runtime_error"
+    assert "failed" in result["detail"]
+    assert json.loads((log.directory / "result.json").read_text()) == result
+    assert read_events(log.directory / "events.jsonl")[-1]["kind"] == "run_finished"

@@ -212,7 +212,8 @@ def test_tool_payload_excludes_artifacts_and_config(exported_run):
         assert excluded not in serialized
 
 
-def test_retry_and_copied_directory_upsert_stable_ids(tmp_path):
+@pytest.mark.parametrize("persisted_count", [1, 2, 4])
+def test_retry_and_copied_directory_recover_duplicate_409(tmp_path, persisted_count):
     source, copied = tmp_path / "source", tmp_path / "copied"
     write_run(source)
     shutil.copytree(source, copied)
@@ -220,11 +221,19 @@ def test_retry_and_copied_directory_upsert_stable_ids(tmp_path):
     attempts = []
 
     def ingest(request):
+        if request.method == "GET":
+            span = stored.get(request.url.path.rsplit("/", 1)[1])
+            return httpx.Response(200, json=span) if span else httpx.Response(404)
         posts = json.loads(request.content)["post"]
         attempts.append(posts)
-        stored.update({span["id"]: span for span in posts})
         if len(attempts) == 1:
+            stored.update({span["id"]: span for span in posts[:persisted_count]})
             raise httpx.ReadTimeout("server might have ingested; " + FAKE_KEY)
+        if any(span["id"] in stored for span in posts):
+            # Live duplicate export returned 409, not a successful upsert.
+            # Do not assume any missing children in this batch were accepted.
+            return httpx.Response(409, text=FAKE_KEY)
+        stored.update({span["id"]: span for span in posts})
         return httpx.Response(202)
 
     transport = httpx.MockTransport(ingest)
@@ -232,7 +241,8 @@ def test_retry_and_copied_directory_upsert_stable_ids(tmp_path):
         exporter.export_run(source, api_key=FAKE_KEY, transport=transport)
     exporter.export_run(source, api_key=FAKE_KEY, transport=transport)
     exporter.export_run(copied, api_key=FAKE_KEY, transport=transport)
-    assert attempts[0] == attempts[1] == attempts[2]
+    assert attempts[0] == attempts[1]
+    assert stored == {span["id"]: span for span in exporter.build_trace(source)}
     assert len(stored) == 4
     assert exporter.build_trace(source, "another-project")[0]["id"] not in stored
 
@@ -295,9 +305,120 @@ def test_http_failures_do_not_leak_or_follow_redirects(tmp_path, code):
 
     with pytest.raises(exporter.ExportError, match=f"HTTP {code}") as caught:
         exporter.export_run(tmp_path, api_key=FAKE_KEY, transport=httpx.MockTransport(ingest))
-    assert len(requests) == 1
+    assert len(requests) == (3 if code == 409 else 1)
+    assert all(request.url.host == "api.smith.langchain.com" for request in requests)
     assert FAKE_KEY not in str(caught.value)
     assert "evil" not in str(caught.value)
+
+
+@pytest.mark.parametrize("code", [301, 307, 401, 403, 404, 429, 500])
+def test_conflict_requires_readable_persisted_span(tmp_path, code):
+    write_run(tmp_path)
+
+    def ingest(request):
+        return httpx.Response(
+            code if request.method == "GET" else 409,
+            text=FAKE_KEY,
+            headers={"location": "https://evil.example/" + FAKE_KEY},
+        )
+
+    with pytest.raises(exporter.ExportError, match=f"HTTP {code}") as caught:
+        exporter.export_run(tmp_path, api_key=FAKE_KEY, transport=httpx.MockTransport(ingest))
+    assert FAKE_KEY not in str(caught.value)
+    assert "evil" not in str(caught.value)
+
+
+@pytest.mark.parametrize("root_only", [False, True])
+def test_conflict_with_partial_batch_acceptance_and_workspace(tmp_path, root_only):
+    events, result = write_run(tmp_path)
+    if root_only:
+        events[-1]["id"] = 2
+        persist(tmp_path, [events[0], events[-1]], result)
+    spans = exporter.build_trace(tmp_path)
+    stored = {spans[-1]["id"]: spans[-1]}
+    workspace = "cbf03831-d63d-447b-bf37-12c587bcbe99"
+    requests = []
+
+    def ingest(request):
+        requests.append(request)
+        assert request.url.host == "eu.api.smith.langchain.com"
+        assert request.headers["x-api-key"] == FAKE_KEY
+        assert request.headers["x-tenant-id"] == workspace
+        if request.method == "GET":
+            return httpx.Response(200, json=stored[request.url.path.rsplit("/", 1)[1]])
+        posts = json.loads(request.content)["post"]
+        conflict = any(span["id"] in stored for span in posts)
+        # A conflicting batch may still accept some or all missing spans.
+        stored.update({span["id"]: span for span in posts})
+        return httpx.Response(409 if conflict else 202)
+
+    assert (
+        exporter.export_run(
+            tmp_path,
+            api_key=FAKE_KEY,
+            endpoint="https://eu.api.smith.langchain.com",
+            workspace_id=workspace,
+            transport=httpx.MockTransport(ingest),
+        )
+        == spans[0]["id"]
+    )
+    assert stored == {span["id"]: span for span in spans}
+    assert len(requests) == (2 if root_only else 1 + 2 * len(spans))
+
+
+@pytest.mark.parametrize(
+    "bad_field", ["json", "object", "id", "trace_id", "dotted_order", "parent_run_id"]
+)
+def test_conflict_requires_matching_span_identity(tmp_path, bad_field):
+    write_run(tmp_path)
+    root = exporter.build_trace(tmp_path)[0]
+
+    def ingest(request):
+        if request.method == "POST":
+            return httpx.Response(409)
+        if bad_field == "json":
+            return httpx.Response(200, text=FAKE_KEY)
+        if bad_field == "object":
+            return httpx.Response(200, json=[FAKE_KEY])
+        return httpx.Response(200, json={**root, bad_field: FAKE_KEY})
+
+    with pytest.raises(exporter.ExportError, match="identity not confirmed") as caught:
+        exporter.export_run(tmp_path, api_key=FAKE_KEY, transport=httpx.MockTransport(ingest))
+    assert FAKE_KEY not in str(caught.value)
+
+
+@pytest.mark.parametrize("failure", ["read_timeout", "write_timeout", "http_error"])
+def test_failure_during_conflict_recovery_can_be_retried(tmp_path, failure):
+    write_run(tmp_path)
+    spans = exporter.build_trace(tmp_path)
+    stored = {spans[0]["id"]: spans[0]}
+    failed = False
+
+    def ingest(request):
+        nonlocal failed
+        if request.method == "GET":
+            if failure == "read_timeout" and not failed:
+                failed = True
+                raise httpx.ReadTimeout(FAKE_KEY)
+            return httpx.Response(200, json=stored[request.url.path.rsplit("/", 1)[1]])
+        posts = json.loads(request.content)["post"]
+        if any(span["id"] in stored for span in posts):
+            return httpx.Response(409)
+        if not failed and posts[0]["id"] == spans[2]["id"]:
+            failed = True
+            if failure == "http_error":
+                return httpx.Response(500, text=FAKE_KEY)
+            stored.update({span["id"]: span for span in posts})
+            raise httpx.ReadTimeout(FAKE_KEY)
+        stored.update({span["id"]: span for span in posts})
+        return httpx.Response(202)
+
+    transport = httpx.MockTransport(ingest)
+    with pytest.raises(exporter.ExportError) as caught:
+        exporter.export_run(tmp_path, api_key=FAKE_KEY, transport=transport)
+    assert FAKE_KEY not in str(caught.value)
+    assert exporter.export_run(tmp_path, api_key=FAKE_KEY, transport=transport) == spans[0]["id"]
+    assert stored == {span["id"]: span for span in spans}
 
 
 @pytest.mark.parametrize("key", ["", " ", "secret\nkey", "secret\rkey", "secret-\u2603"])
@@ -398,9 +519,16 @@ def test_cli_with_real_eventlog_and_mock_http(tmp_path, monkeypatch, capsys):
     before = snapshot(tmp_path)
     original = exporter.httpx.Client
     payloads = []
+    stored = {}
 
     def ingest(request):
-        payloads.append(json.loads(request.content))
+        if request.method == "GET":
+            return httpx.Response(200, json=stored[request.url.path.rsplit("/", 1)[1]])
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        if any(span["id"] in stored for span in payload["post"]):
+            return httpx.Response(409)
+        stored.update({span["id"]: span for span in payload["post"]})
         return httpx.Response(202)
 
     def client(**kwargs):
@@ -411,6 +539,9 @@ def test_cli_with_real_eventlog_and_mock_http(tmp_path, monkeypatch, capsys):
     assert exporter.main([str(tmp_path), "--project", "cli-test"]) == 0
     assert len(payloads[0]["post"]) == 2
     assert payloads[0]["post"][0]["session_name"] == "cli-test"
+    assert "Trace queued for ingestion:" in capsys.readouterr().out
+    assert exporter.main([str(tmp_path), "--project", "cli-test"]) == 0
+    assert len(stored) == 2
     assert "Trace queued for ingestion:" in capsys.readouterr().out
     assert snapshot(tmp_path) == before
 

@@ -6,14 +6,15 @@ Run from a checkout with the coding_agent package installed:
 Only main() reads LANGSMITH_API_KEY, LANGSMITH_ENDPOINT and LANGSMITH_WORKSPACE_ID.
 Importing this module or building a trace never sends data. Only events.jsonl and
 result.json are read; artifact references are never opened and no files are written.
-Repeated exports upsert the same IDs, including after copying the source directory.
+Repeated exports reuse the same IDs, including after copying the source directory.
 
-REST contract checked against official docs and SDK on 2026-09-05:
+REST contract checked against official docs on 2026-09-06:
 https://docs.langchain.com/langsmith/run-data-format
 https://docs.langchain.com/langsmith/log-llm-trace
 https://docs.langchain.com/langsmith/smith-api/runs/ingest-runs-batch-json
-https://github.com/langchain-ai/langsmith-sdk/blob/main/python/langsmith/client.py
-The SDK posts {"post": [...]} to /runs/batch and describes this as ingestion/upsert.
+https://docs.langchain.com/langsmith/smith-api/run/read-run
+Batch POST can return 409. Resolve conflicts per span, confirming existing IDs
+and submitting missing spans individually; a persisted root is not a full trace.
 An HTTP success means queued for ingestion, not independently verified persistence.
 """
 
@@ -293,6 +294,46 @@ def _headers(api_key: str, workspace_id: str | None) -> dict[str, str]:
     return headers
 
 
+def _confirm_duplicate(
+    client: httpx.Client, endpoint: str, headers: dict[str, str], span: Json
+) -> None:
+    response = client.get(endpoint + "/runs/" + span["id"], headers=headers)
+    if response.status_code != 200:
+        raise ExportError(
+            "LangSmith export conflict (HTTP 409) could not be confirmed "
+            f"(HTTP {response.status_code}); retrying uses the same trace IDs"
+        )
+    try:
+        existing = response.json()
+    except ValueError:
+        existing = None
+    identity = ("id", "trace_id", "dotted_order", "parent_run_id")
+    if not isinstance(existing, dict) or any(
+        existing.get(key) != span.get(key) for key in identity
+    ):
+        raise ExportError(
+            "LangSmith export conflict (HTTP 409): stored span identity not confirmed"
+        )
+
+
+def _ingest(
+    client: httpx.Client, endpoint: str, headers: dict[str, str], spans: list[Json]
+) -> None:
+    response = client.post(endpoint + "/runs/batch", headers=headers, json={"post": spans})
+    if response.is_success:
+        return
+    if response.status_code != 409:
+        # Never echo body, URL, headers, or exception text, even for redirects.
+        raise ExportError(f"LangSmith export was not accepted (HTTP {response.status_code})")
+    if len(spans) == 1:
+        _confirm_duplicate(client, endpoint, headers, spans[0])
+        return
+    # Batch conflicts say nothing about which spans were accepted. Bounded
+    # singleton attempts also handle partial ingestion and concurrent exporters.
+    for span in spans:
+        _ingest(client, endpoint, headers, [span])
+
+
 def export_run(
     run_dir: Path,
     *,
@@ -304,9 +345,11 @@ def export_run(
 ) -> str:
     """Explicitly queue one trace; a MockTransport allows entirely local testing.
 
-    Upserts reuse project + first-event-derived root IDs and event-derived child
-    IDs. Retrying after an uncertain response does not create a second trace.
-    There is no local export marker that can hide partial remote ingestion.
+    Reuses project + first-event-derived root IDs and event-derived child IDs.
+    On 409, each span must be accepted or confirmed remotely with matching trace
+    identity. Existing spans are left unchanged, not updated from edited logs.
+    An unreadable conflict fails safely for a later explicit retry. No local
+    marker can hide partial ingestion, and no automatic retry loop is used.
     """
     endpoint = validate_endpoint(endpoint)
     headers = _headers(api_key, workspace_id)
@@ -315,14 +358,11 @@ def export_run(
         with httpx.Client(
             timeout=30, follow_redirects=False, trust_env=False, transport=transport
         ) as client:
-            response = client.post(endpoint + "/runs/batch", headers=headers, json={"post": spans})
+            _ingest(client, endpoint, headers, spans)
     except (httpx.HTTPError, OSError, ValueError):
         raise ExportError(
             "LangSmith export transport failed; retrying uses the same trace IDs"
         ) from None
-    if not response.is_success:
-        # Do not echo body, URL, headers, or exception text, even for redirects.
-        raise ExportError(f"LangSmith export was not accepted (HTTP {response.status_code})")
     return str(spans[0]["id"])
 
 

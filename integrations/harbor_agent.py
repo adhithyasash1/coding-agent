@@ -25,19 +25,38 @@ from coding_agent.trace import EventLog
 from coding_agent.types import ToolCall, ToolResult
 
 
+class HarborRuntime(Agent):
+    def _execute(self, call: ToolCall) -> ToolResult:
+        if call.name == "start_process" and "timeout" not in call.arguments:
+            # The shared runtime fills omitted timeouts with command_timeout.
+            # Preserve omission here so HarborTools can use the sandbox lifetime.
+            call = replace(call, arguments={**call.arguments, "timeout": None})
+        return super()._execute(call)
+
+
 class HarborTools:
-    def __init__(self, environment, loop, root, workspace, outputs, timeout):
+    def __init__(self, environment, loop, root, workspace, outputs, timeout, service_deadline):
         self.environment, self.loop, self.root = environment, loop, root
         self.workspace, self.outputs, self.timeout = workspace, outputs, timeout
         self._revision = ""
         self.closed = False
         self.deadline = float("inf")
+        self.service_deadline = service_deadline
         self._schemas = self.rpc("schemas")
+        for schema in self._schemas:
+            if schema["function"]["name"] == "start_process":
+                schema["function"]["description"] += (
+                    " In Harbor, omitted timeout keeps the service alive for grading until "
+                    "sandbox teardown or the bounded tool-server lifetime. "
+                    "An explicit timeout is still honored."
+                )
 
     def set_deadline(self, deadline):
         self.deadline = deadline
 
     def rpc(self, operation, **data):
+        if self.closed:
+            raise RuntimeError("Harbor tool transport is closed")
         remaining = max(1, min(self.timeout + 15, self.deadline - time.monotonic()))
         command = shlex.join(
             [
@@ -74,6 +93,14 @@ class HarborTools:
         return self._schemas
 
     def execute(self, call: ToolCall) -> ToolResult:
+        if call.name == "start_process" and call.arguments.get("timeout") is None:
+            call = replace(
+                call,
+                arguments={
+                    **call.arguments,
+                    "timeout": max(0.001, self.service_deadline - time.monotonic()),
+                },
+            )
         result = ToolResult(**self.rpc("execute", call=asdict(call)))
         self._revision = result.revision or self._revision
         if result.artifact:
@@ -87,17 +114,32 @@ class HarborTools:
         return self._revision
 
     def close(self):
-        if not self.closed:
-            self.rpc("close")
-            self.closed = True
+        # Harbor grades after run() returns. The sandbox owns remote processes;
+        # detach here and let teardown (or the server's finite lifetime) stop them.
+        self.closed = True
 
 
 class AdaptiveAgent(BaseAgent):
     def __init__(
-        self, *args, config: str, workspace: str | None = None, commit_patch: bool = False, **kwargs
+        self,
+        *args,
+        config: str,
+        workspace: str | None = None,
+        commit_patch: bool = False,
+        service_lifetime_sec: float | None = None,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.config = load_config(Path(config))
+        # Measured from setup, including the run and a verifier window. Harbor
+        # does not expose the trial's verifier timeout through BaseAgent.
+        self.service_lifetime_sec = (
+            self.config.run.max_seconds + 720
+            if service_lifetime_sec is None
+            else float(service_lifetime_sec)
+        )
+        if not math.isfinite(self.service_lifetime_sec) or self.service_lifetime_sec <= 0:
+            raise ValueError("service_lifetime_sec must be positive and finite")
         self.workspace = workspace
         self.commit_patch = commit_patch
         self.root = "/tmp/ca-" + uuid.uuid4().hex[:12]
@@ -141,13 +183,14 @@ class AdaptiveAgent(BaseAgent):
                 "--timeout",
                 str(self.config.run.command_timeout),
                 "--lifetime",
-                str(self.config.run.max_seconds + 120),
+                str(self.service_lifetime_sec),
             ]
         )
         launch = (
             f"PYTHONPATH={shlex.quote(self.root)} nohup {command} "
             f">{shlex.quote(self.root + '/server.log')} 2>&1 </dev/null &"
         )
+        self.service_deadline = time.monotonic() + self.service_lifetime_sec
         await environment.exec(command=launch, timeout_sec=10)
         for _ in range(100):
             ready = await environment.exec(
@@ -169,6 +212,8 @@ class AdaptiveAgent(BaseAgent):
         log.emit(
             "environment",
             backend="harbor",
+            cleanup_strategy="sandbox_teardown_or_service_lifetime",
+            service_lifetime_sec=self.service_lifetime_sec,
             workspace=self.workspace,
             provenance=provenance(),
             commit_patch=self.commit_patch,
@@ -182,13 +227,14 @@ class AdaptiveAgent(BaseAgent):
                 self.workspace,
                 outputs,
                 self.config.run.command_timeout,
+                self.service_deadline,
             )
             supervisor = (
                 OpenAIModel(self.config.supervisor_model) if self.config.supervisor_model else None
             )
-            return Agent(self.config, OpenAIModel(self.config.model), tools, log, supervisor).run(
-                instruction
-            )
+            return HarborRuntime(
+                self.config, OpenAIModel(self.config.model), tools, log, supervisor
+            ).run(instruction)
 
         try:
             self.result = await asyncio.to_thread(work)
@@ -197,12 +243,37 @@ class AdaptiveAgent(BaseAgent):
                 await self._commit(environment)
         finally:
             log.close()
-            await environment.download_dir(f"{self.root}/outputs", outputs)
-            await environment.download_file(
-                f"{self.root}/server.log", self.logs_dir / "tool-server.log"
-            )
+            await self._download_artifacts(environment, outputs, secrets)
         if self.result["status"] not in {"submitted", "budget_exhausted"}:
             raise RuntimeError(f"Harness stopped with {self.result['status']}")
+
+    async def _download_artifacts(self, environment, outputs, secrets):
+        errors = []
+        for download, source, destination in (
+            (environment.download_dir, f"{self.root}/outputs", outputs),
+            (
+                environment.download_file,
+                f"{self.root}/server.log",
+                self.logs_dir / "tool-server.log",
+            ),
+        ):
+            try:
+                await download(source, destination)
+            except Exception as error:
+                message = f"{type(error).__name__}: {error}"
+                for secret in sorted(secrets, key=len, reverse=True):
+                    message = message.replace(secret, "[REDACTED]")
+                errors.append({"source": source, "error": message})
+        if errors:
+            # The run trace is already finalized. Keep optional transfer failures
+            # separately, without replacing an original exception or run result.
+            try:
+                (self.logs_dir / "artifact-download-errors.json").write_text(
+                    json.dumps(errors, indent=2) + "\n"
+                )
+            except OSError:
+                self.logger.warning("Could not write artifact-download error evidence")
+            self.logger.warning("Harbor artifact downloads failed; inspect download error evidence")
 
     async def _commit(self, environment):
         command = (

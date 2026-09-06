@@ -26,6 +26,13 @@ change invalidates verification. Use remember to preserve findings, failed hypot
 and remaining work before context grows. Use request_help when stuck. Call submit when
 finished, with an honest summary and limitations. Do not access hidden tests or gold solutions.
 Commands execute within the configured environment. Never assume tests passed from silence.
+Prefer existing dependencies and standard tools for standalone deliverables. If a new
+dependency is necessary, make its installation reproducible in the intended runtime.
+Verify each deliverable through its expected entry point and interpreter; an interactive
+environment's installed packages may not be available to the eventual caller.
+Preserve failing exit codes in verification commands, including pipelines and cleanup.
+The shell is /bin/sh; invoke Bash explicitly when using Bash syntax. Complete the requested
+behavior without adding unrelated features or repeatedly checking already established facts.
 """
 
 
@@ -136,9 +143,7 @@ class Agent:
             artifact = self.log.artifact("runtime-error.txt", traceback.format_exc())
             self.log.emit("runtime_error", error=detail, artifact=artifact)
         finally:
-            self.log.emit("cleanup_started")
-            self.tools.close()
-            self.log.emit("cleanup_finished")
+            status, detail, revision = self._finalize_tools(status, detail)
         result = {
             "status": status,
             "detail": detail,
@@ -153,13 +158,33 @@ class Agent:
             "supervisor_calls": self.state.supervisor_calls,
             "interventions": self.state.interventions,
             "elapsed_seconds": time.monotonic() - self.started,
-            "revision": self.tools.revision(),
+            "revision": revision,
             "verified_revision": self.state.verified_revision,
             "grader_result": None,
         }
         self.log.emit("run_finished", result=result)
         self.log.finish(result)
         return result
+
+    def _finalize_tools(self, status: str, detail: str) -> tuple[str, str, str]:
+        errors = []
+        self.log.emit("cleanup_started")
+        try:
+            self.tools.close()
+        except Exception as error:
+            errors.append(f"Cleanup failed: {type(error).__name__}: {error}")
+            self.log.emit("cleanup_failed", error=errors[-1])
+        else:
+            self.log.emit("cleanup_finished")
+        try:
+            revision = self.tools.revision()
+        except Exception as error:
+            revision = ""
+            errors.append(f"Final revision failed: {type(error).__name__}: {error}")
+            self.log.emit("revision_failed", error=errors[-1])
+        if errors and status in {"submitted", "budget_exhausted"}:
+            status, detail = "runtime_error", "; ".join(errors)
+        return status, detail, revision
 
     def _loop(self) -> None:
         for turn in range(1, self.config.run.max_turns + 1):
