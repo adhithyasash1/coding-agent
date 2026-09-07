@@ -1,8 +1,9 @@
 # Coding-agent evaluation report
 
-Status: 2026-09-06 continuation complete. Baseline preserved. Terminal-Bench
-development retries and one SWE-bench harness smoke are graded. Owned inference
-is stopped with zero running containers. This is not a leaderboard score.
+Status: 2026-09-07 continuation complete. Baseline and the frozen session08
+batch are preserved. Deadline, Pier, Terminal-Bench, SWE-bench, and one
+DeepSWE smoke were exercised under development limits. Owned Modal apps are
+stopped with zero running containers. These are not leaderboard scores.
 
 ## Results and what they mean
 
@@ -72,8 +73,10 @@ measures the official grader on the leftover patch, not a completed harness
 submission. Setup succeeded: the frozen django image already has Python 3.11.5,
 so the private tool-interpreter sidecar was not needed for this candidate.
 
-**DeepSWE.** Not run. `commit_patch` exists locally. Pier is not pinned or
-installed; mixing it with Harbor 0.22.0 is forbidden. Treat as not ready.
+**DeepSWE before session09.** The earlier report correctly treated DeepSWE as
+not ready while Pier was unpinned. Session09 later used the pinned Pier
+environment and is recorded below; it produced no grader score because the
+inference launcher expired during a model request.
 
 ## Model choice
 
@@ -197,27 +200,89 @@ spurious.
 
 ## Remaining work
 
-Three frozen SWE IDs and DeepSWE remain unmeasured. DeepSWE needs a pinned Pier
-revision in a separate environment. Supervisor still unused in every graded
-trial; any claim it helps needs paired equal-budget controls that this budget
-did not buy. Do not treat development retries as unseen first passes.
+The supervisor has no measured benefit because no paired equal-budget ablation
+was purchased. Do not treat development retries as unseen first passes. The
+external LangSmith export of the new traces is pending explicit approval for
+the outbound model and workspace payload; all local traces and grader reports
+remain available.
 
-## Session 08 continuation - September 7, in progress
+## Session 08 continuation - September 7, completed
 
-The remaining frozen SWE instances are running sequentially in
-`swe-dev-remaining-08` on unchanged existing source at `666dc37`. Results are
-pending. Native model smoke08 passed. Current core checks:140passed14optional
-skips; original Harbor SDK13passed. Session-start billing records $11.69 credits
-used, $0 billed; final session cost and cleanup remain pending.
+The remaining frozen SWE instances completed sequentially in
+`swe-dev-remaining-08` on unchanged source at `666dc37`. Astropy,
+pytest, and scikit-learn each ended at the wall boundary as `model_error`, with
+no verifier result. The job record reports three completed trials, three
+errors, and 815,593 input plus 34,259 output tokens. Their original traces,
+partial workspaces, interruptions, and unknown-usage reservations remain
+untouched. This batch was not duplicated or edited during execution.
 
 Worker-only Django trace analysis found that context exposed remaining tokens but
 not wall time. Passing behavioral checks at approximately710s omitted verify=true;
 runner troubleshooting then exhausted840s. An isolated candidate adds declining
 remaining_seconds and one finalization reminder in the last min(120s,20%ofbudget).
 It preserves explicit verification/submission and deadlines. The reproduced missing
-field fails before the change;66selected tests pass afterward. Candidate not applied
-or measured on a benchmark yet; evidence is in the private deadline-candidate folder.
+field failed before the change; 66 selected tests passed afterward. The candidate
+was then applied and measured in session09 below; evidence is in the private
+deadline-candidate folder.
 
-Pier0.3.1 is pinned to df89f994623a0a6a57229103b6fe910766693c30 in a separate
-lockfile-created environment. Existing SDK checks pass, but a Pier-specific adapter
-is still under validation. No DeepSWE score or readiness claim is made.
+Pier 0.3.1 is pinned to `df89f994623a0a6a57229103b6fe910766693c30` in a
+separate lockfile-created environment with Harbor 0.5.0. The adapter now has
+separate write, verify, and submit fixture calls plus a real temporary Git
+trial covering committed binary patch collection, pristine transfer, grading,
+commit failure, collection failure, budget exhaustion, and cleanup. Pier's
+original 13 SDK checks and eight Pier checks pass. DeepSWE task metadata at
+dataset commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea` parsed under this
+environment and declared `abs-module-cache-flags` alphabetically before the
+solver ran. The first launch failed before setup because the host import path
+omitted `src`; fresh label 02 then ran with the corrected path.
+
+## Session 09 continuation - September 7, completed
+
+The isolated deadline candidate was applied at commit
+`12abd2b3a4ce4659ea84ad0532423fe4b6086eef`. It adds declining
+`remaining_seconds` to the model context and one finalization reminder in the
+last `min(120 seconds, 20% of budget)`. The separate classification fix adds
+`ModelDeadlineExceeded` for a global deadline, preserves the failure event and
+unknown-token reservation, and ends the run as `budget_exhausted`. Earlier
+timeouts, connection failures, and malformed responses remain `model_error`.
+No automatic retries were added. Focused deadline/model/runtime tests passed
+51/51 and the full core suite passed 150 tests with 22 optional skips.
+
+The corrected Django development run `swe-dev-deadline-django-10` completed
+with reward 1.0 after a `budget_exhausted` worker result at 840.626 seconds
+(109,745 input and 5,432 output tokens). It emitted one reminder at 742.28
+seconds, then preserved a global-deadline `model_failed` event with 90,252
+unknown tokens reserved. The grader applied the patch and resolved the task.
+The Terminal-Bench `kv-store-grpc` run `tb21-dev-kv-store-grpc-09` completed
+with reward 1.0, 18 turns, 657.875 seconds, and 146,227 input plus 5,788
+output tokens. The service remained running through the separate grading step.
+
+The one DeepSWE task was predeclared with the pinned dataset, image,
+no-network agent and verifier, separate verifier environment, 840-second
+worker budget, and committed-patch collection. Label 01 is a preserved
+preflight import failure. Label 02 reached 17 turns and 771.301 seconds with
+296,528 input and 2,193 output tokens, then received HTTP 500 when the
+inference launcher expired. Pier therefore recorded `model_error`, no commit
+receipt, no verifier run, and no score. The local trajectory and partial
+workspace remain preserved; no reference solution or hidden tests entered the
+solver context.
+
+The allowed Astropy post-deadline check `swe-dev-deadline-astropy-11` ended at
+840.817 seconds as `budget_exhausted`, emitted one reminder at 751.818 seconds,
+and was graded separately with reward 0.0. The patch applied successfully, but
+`astropy/utils/tests/test_misc.py::test_inherit_docstrings` remained failing;
+the other recorded checks passed. This confirms restored grading after a wall
+deadline while also showing that deadline handling does not improve an
+incomplete task patch by itself.
+
+Final credentialed billing was $20.38 credits consumed and $22.18164059
+metered, with $0 billed and $1.80164059 free-storage adjustment. Five inference
+and evaluation app IDs were stopped, and a credentialed container listing was
+empty after shutdown. Billing may report small usage lag. Local evidence is in
+`billing-final-session09.json` and `shutdown-session09.json`.
+
+The new local traces, partial traces, and grader reports are retained under
+`.agent-runs/live-20260905/jobs`. The existing paced LangSmith exporter was
+not run because the external-data review blocked sending model messages and
+workspace-derived traces without explicit user approval. Existing receipts
+were not modified, and no new remote trace or feedback receipt is claimed.
