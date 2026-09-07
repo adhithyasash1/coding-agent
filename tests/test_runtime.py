@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from coding_agent.config import Config, RunConfig
-from coding_agent.model import ScriptedModel
+from coding_agent.model import ModelDeadlineExceeded, ScriptedModel
 from coding_agent.runtime import Agent
 from coding_agent.toolset import WorkspaceTools
 from coding_agent.trace import EventLog, read_events
@@ -60,6 +60,29 @@ def test_verification_becomes_stale_after_edit(tmp_path):
     assert result["status"] == "budget_exhausted"
     results = [event for event in events if event["kind"] == "tool_result"]
     assert results[-1]["result"]["status"] == "error"
+
+
+class DeadlineModel:
+    def complete(self, messages, tools, max_tokens):
+        raise ModelDeadlineExceeded("Model request deadline exceeded")
+
+
+def test_global_model_deadline_is_budget_exhaustion_with_unknown_usage(tmp_path):
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    log = EventLog(tmp_path / "trace")
+    try:
+        result = Agent(
+            Config(run=RunConfig(max_turns=3)),
+            DeadlineModel(),
+            WorkspaceTools(workspace, tmp_path / "outputs"),
+            log,
+        ).run("Check the workspace.")
+    finally:
+        log.close()
+    assert result["status"] == "budget_exhausted"
+    assert result["detail"] == "wall time limit reached"
+    assert result["usage"]["unknown_usage_reserved"] > 0
 
 
 class Advisor:

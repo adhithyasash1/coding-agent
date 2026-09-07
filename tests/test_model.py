@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from coding_agent.config import ModelConfig
-from coding_agent.model import ModelError, OpenAIModel, _reply, _result_url
+from coding_agent.model import ModelDeadlineExceeded, ModelError, OpenAIModel, _reply, _result_url
 
 
 def body(message=None):
@@ -83,12 +83,31 @@ def test_real_http_client_auth_usage_and_deadline(monkeypatch):
         assert requests[0][1] == "Bearer dummy-private-key"
         assert requests[0][2]["model"] == "org/model"
         model.set_deadline(0)
-        with pytest.raises(ModelError, match="deadline"):
+        with pytest.raises(ModelDeadlineExceeded, match="deadline"):
             model.complete([], [], 100)
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_transport_timeout_at_global_deadline_is_deadline_error(monkeypatch):
+    ticks = iter((0.0, 10.0))
+
+    def send(request):
+        raise httpx.ReadTimeout("request timed out", request=request)
+
+    client_class = httpx.Client
+    monkeypatch.setattr("coding_agent.model.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        "coding_agent.model.httpx.Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(send), **kwargs),
+    )
+    monkeypatch.setenv("AGENT_API_KEY", "dummy-private-key")
+    model = OpenAIModel(ModelConfig(name="org/model", timeout=10))
+    model.set_deadline(10.0)
+    with pytest.raises(ModelDeadlineExceeded, match="deadline"):
+        model.complete([], [], 100)
 
 
 @pytest.fixture

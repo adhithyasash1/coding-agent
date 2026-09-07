@@ -10,7 +10,7 @@ from typing import Any
 from coding_agent.config import Config
 from coding_agent.context import Context, ContextOverflow, estimate_tokens
 from coding_agent.execution import bounded_text
-from coding_agent.model import ModelError
+from coding_agent.model import ModelDeadlineExceeded, ModelError
 from coding_agent.monitor import ProgressMonitor, Signal
 from coding_agent.supervisor import parse_advice, supervisor_messages
 from coding_agent.trace import EventLog
@@ -92,6 +92,7 @@ class State:
     notes: str = ""
     last_advice: str = ""
     submitted: str | None = None
+    finalization_reminded: bool = False
     recent: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -136,6 +137,8 @@ class Agent:
                 status, detail = "submitted", self.state.submitted
         except (BudgetExhausted, ContextOverflow) as error:
             detail = str(error)
+        except ModelDeadlineExceeded:
+            status, detail = "budget_exhausted", "wall time limit reached"
         except ModelError as error:
             status, detail = "model_error", str(error)
         except KeyboardInterrupt:
@@ -369,16 +372,38 @@ class Agent:
         )
 
     def _memory(self) -> None:
-        self.context.memory = json.dumps(
-            {
-                "notes": self.state.notes,
-                "last_advice": self.state.last_advice,
-                "revision": self.tools.revision(),
-                "verified_revision": self.state.verified_revision,
-                "remaining_tokens": self.config.run.max_tokens - self.state.tokens,
-                "interventions": self.state.interventions,
-            }
-        )
+        revision = self.tools.revision()
+        remaining = max(0.0, self.deadline - time.monotonic())
+        memory: dict[str, Any] = {
+            "notes": self.state.notes,
+            "last_advice": self.state.last_advice,
+            "revision": revision,
+            "verified_revision": self.state.verified_revision,
+            "remaining_tokens": self.config.run.max_tokens - self.state.tokens,
+            "remaining_seconds": remaining,
+            "interventions": self.state.interventions,
+        }
+        # Short runs reserve their final fifth; longer runs reserve at most two minutes.
+        reserve = min(120.0, self.config.run.max_seconds * 0.2)
+        if not self.state.finalization_reminded and 0 < remaining <= reserve:
+            reminder = (
+                "Wall time is running low. Prioritize finalization: finish necessary edits, "
+                "run a meaningful check with run_command verify=true and preserve failing "
+                "exit codes. "
+                "Once the current workspace is verified, call submit without further mutations, "
+                "with honest coverage limitations. If verification fails, do not claim success. "
+                "The deadline and verification requirement remain unchanged."
+            )
+            memory["finalization_reminder"] = reminder
+            self.state.finalization_reminded = True
+            self.log.emit(
+                "finalization_reminder",
+                remaining_seconds=remaining,
+                reserve_seconds=reserve,
+                turn=self.state.turns,
+                message=reminder,
+            )
+        self.context.memory = json.dumps(memory)
 
     def _consider_supervision(
         self, call: ToolCall, signal: Signal | None, event_id: int, group: list[Message]

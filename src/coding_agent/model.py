@@ -24,6 +24,10 @@ class ModelError(Exception):
     """A sanitized model transport or response validation failure."""
 
 
+class ModelDeadlineExceeded(ModelError):
+    """The agent's global wall-clock deadline expired during a model call."""
+
+
 _RETRY_STATUSES = {429}
 _TRANSIENT_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 _MAX_RETRIES = 2
@@ -204,7 +208,7 @@ class OpenAIModel:
     def _timeout(self) -> float:
         remaining = self._deadline - time.monotonic()
         if remaining <= 0:
-            raise ModelError("Model request deadline exceeded")
+            raise ModelDeadlineExceeded("Model request deadline exceeded")
         return min(self.config.timeout, remaining)
 
     def _pause(self, delay: float) -> None:
@@ -276,6 +280,8 @@ class OpenAIModel:
             )
         except _TRANSIENT_ERRORS:
             self._notify(stage="transport_error", attempt=attempt + 1)
+            if time.monotonic() >= self._deadline:
+                raise ModelDeadlineExceeded("Model request deadline exceeded") from None
             raise ModelError(
                 "Model transport failed; request usage is unknown. No automatic retry."
             ) from None
