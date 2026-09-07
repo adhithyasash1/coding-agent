@@ -170,10 +170,17 @@ Paths relative to `.agent-runs/live-20260905`. Not committed.
 | gRPC development retry | jobs/tb21-dev-kv-store-grpc-06/kv-store-grpc__JnJuEwU |
 | OpenSSL development retry | jobs/tb21-dev-openssl-selfsigned-cert-06/openssl-selfsigned-cert__E6YQzV3 |
 | SWE django smoke | jobs/swe-dev-django-9296-07/django__django-9296__3FAeVg5 |
+| Session08 frozen SWE batch | jobs/swe-dev-remaining-08/ |
+| Deadline Django | jobs/swe-dev-deadline-django-10/django__django-9296__FrUKMfQ |
+| Terminal-Bench gRPC continuation | jobs/tb21-dev-kv-store-grpc-09/kv-store-grpc__ADhLTCm |
+| DeepSWE label 02 | jobs/deepswe-dev-abs-module-cache-flags-02/abs-module-cache-flags__9Yu6hW8 |
+| Astropy post-deadline check | jobs/swe-dev-deadline-astropy-11/astropy__astropy-7166__Yxfs9d2 |
+| DeepSWE declaration | deepswe-predeclare.json |
+| Final billing and shutdown | billing-final-session09.json, shutdown-session09.json |
 | Django image python probe | swe-python-probe.json (Python 3.11.5) |
 | Dependency / lifecycle reproductions | dependency-reproduction/, lifecycle-reproduction/ |
 | Settings | agent.toml, controls-smoke.yaml, controls-swe-smoke.yaml, image-pins.json |
-| Billing | billing-before.json, billing-pre-retry-20260906.json, billing-post-tb-retries-20260906.json, billing-final-20260906.json |
+| Billing | billing-before.json, billing-pre-retry-20260906.json, billing-post-tb-retries-20260906.json, billing-final-20260906.json, billing-final-session09.json |
 | LangSmith receipts | langsmith-receipts/ |
 
 ## Cost, validation, shutdown
