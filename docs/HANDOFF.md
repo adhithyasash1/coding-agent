@@ -1,26 +1,43 @@
 # Copy-paste handoff
 
 Continue the coding-agent project at `/Users/adhithyasash1/new-coding-agent`.
-Snapshot: 2026-09-06 after TB development retries, harness fixes, and one SWE
-smoke. Recheck processes, Modal resources, billing, and saved results before
+Snapshot: 2026-09-07 with session08 SWE batch active. Earlier sections retain
+historical outcomes; the Immediate continuation section takes precedence. Recheck processes, Modal resources, billing, and saved results before
 launching anything. Do not duplicate running evaluations.
 
-## Immediate continuation
+## Immediate continuation - 2026-09-07 session 08
 
-1. Nothing owned is running. Inference apps `ap-8JFsctTXtfRdSKYQiCMZq4` and
-   `ap-k0ymAHULxsb1CVgMcNmztE` are stopped. Probe app `ap-au1v3WVdyvSkR7fHRvGcsg`
-   is stopped. Eval app `ap-PMlnDl7NOv6q8IUzuMMVp9` is deployed with zero tasks.
-   Last container list was empty after session07 stop. Confirm before a new GPU.
-2. Preserve first-pass TB results: OpenSSL reward 0, scheduling 1, nginx 1,
-   gRPC NotFoundError with no grader reward. Development retries are separate:
-   `tb21-dev-kv-store-grpc-06` reward 1, `tb21-dev-openssl-selfsigned-cert-06`
-   reward 1. SWE smoke `swe-dev-django-9296-07` reward 1 after budget_exhausted.
-3. LangSmith receipts exist for TB development retries and the SWE django smoke
-   (`149a93a0-2303-50f4-8b9f-30d33d6c6640`, feedback HTTP 200). The interrupted
-   gRPC baseline has no harness result and was not exported as a graded run.
-4. Next paid work, if budget remains: remaining frozen SWE IDs, or a pinned
-   Pier/DeepSWE smoke in a **separate** env. Do not assume the supervisor helps;
-   it was never called. Do not replace frozen tasks after seeing outcomes.
+1. ACTIVE job `swe-dev-remaining-08`, wrapper PID92971, log
+   `R/harbor-swe-remaining-08.log`. Three remaining frozen SWE IDs, sequential,
+   unchanged existing source at `666dc37`. Astropy started and is inspecting code.
+   Do not duplicate the job or edit live runtime source mid-batch.
+2. ACTIVE inference app `ap-X36M2zlK7EiRwG0RXjVPCJ`, wrapper PID89962,
+   log `R/inference-08.log`. Native08 tool smoke passed. One-hour launcher limit,
+   roughly 14:08 UTC September 7. Check actual remaining lifetime before more work.
+   Both wrappers use bounded caffeinate. Evaluation app is unchanged.
+3. Latest saved billing `R/billing-session08-start.json`: credits $11.69,
+   metered $13.49164059, free storage $1.80164059, billed $0. Working ceiling $24.
+   Session08 usage after this snapshot is additional. Always credential-wrap reads.
+4. Deadline weakness reproduced from Django worker trace: no remaining seconds in
+   context; successful behavioral checks at ~710s lacked verify=true; test-runner
+   troubleshooting exhausted840s. Candidate is ISOLATED under
+   `R/deadline-candidate/`, NOT APPLIED. Read VALIDATION.md and patch there.
+   66 selected tests passed in isolated copy; review and apply after batch, then
+   full tests and a labeled development rerun. Keep current source frozen now.
+5. Pier v0.3.1 is cloned at `R/pier-source`, exact commit
+   `df89f994623a0a6a57229103b6fe910766693c30`. Its uv.lock SHA256 is
+   `6261c632e80ee65e327c23f450c7cc5c38e34f2ee941d3ebe96ff72fc91f6de9`.
+   `uv sync --frozen --no-dev` created separate `.venv-pier`: Pier0.3.1,
+   Harbor0.5.0, Modal1.4.2. Existing13SDK tests pass there AND original .venv-eval.
+   That alone does not prove Pier compatibility. New adapter/tests/docs are being
+   prepared by subagent `01a07c01-01d0-72e2-a496-5ad5ec50e0f6`; inspect working tree
+   and its result before committing. No paid DeepSWE task has run.
+6. Main core suite at666dc37:140passed14optional skips. Candidate subagent
+   `01a07bfb-393e-7572-b3dc-48020aa1f812` wrote Django analysis and isolated patch.
+   Five-hour usage reached79%, weekly90%; continuation prompt delivered in chat.
+7. Finish existing batch, preserve per-task first-pass/retry distinctions, export
+   finalized traces with separate grader scores, reconcile billing, stop owned
+   compute, and update report. Prior TB/SWE outcomes below remain unchanged.
 
 ## User goal and authority
 

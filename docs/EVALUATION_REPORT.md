@@ -201,3 +201,23 @@ Three frozen SWE IDs and DeepSWE remain unmeasured. DeepSWE needs a pinned Pier
 revision in a separate environment. Supervisor still unused in every graded
 trial; any claim it helps needs paired equal-budget controls that this budget
 did not buy. Do not treat development retries as unseen first passes.
+
+## Session 08 continuation - September 7, in progress
+
+The remaining frozen SWE instances are running sequentially in
+`swe-dev-remaining-08` on unchanged existing source at `666dc37`. Results are
+pending. Native model smoke08 passed. Current core checks:140passed14optional
+skips; original Harbor SDK13passed. Session-start billing records $11.69 credits
+used, $0 billed; final session cost and cleanup remain pending.
+
+Worker-only Django trace analysis found that context exposed remaining tokens but
+not wall time. Passing behavioral checks at approximately710s omitted verify=true;
+runner troubleshooting then exhausted840s. An isolated candidate adds declining
+remaining_seconds and one finalization reminder in the last min(120s,20%ofbudget).
+It preserves explicit verification/submission and deadlines. The reproduced missing
+field fails before the change;66selected tests pass afterward. Candidate not applied
+or measured on a benchmark yet; evidence is in the private deadline-candidate folder.
+
+Pier0.3.1 is pinned to df89f994623a0a6a57229103b6fe910766693c30 in a separate
+lockfile-created environment. Existing SDK checks pass, but a Pier-specific adapter
+is still under validation. No DeepSWE score or readiness claim is made.
