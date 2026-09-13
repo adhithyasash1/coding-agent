@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 class ModelError(Exception):
     """A sanitized model transport or response validation failure."""
 
+    def __init__(self, message: str, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
 
 class ModelDeadlineExceeded(ModelError):
     """The agent's global wall-clock deadline expired during a model call."""
@@ -144,9 +148,7 @@ def _choice(body: dict[str, Any]) -> dict[str, Any]:
     return dict(choices[0])
 
 
-def _reply(response: httpx.Response) -> ModelReply:
-    body = _json_object(response.text, "Model response")
-    choice = _choice(body)
+def _response_fields(choice: dict[str, Any]) -> tuple[Message, str]:
     message, reason = choice.get("message"), choice.get("finish_reason")
     if not isinstance(message, dict) or message.get("role") != "assistant":
         raise ModelError("Model response is missing an assistant message")
@@ -155,10 +157,60 @@ def _reply(response: httpx.Response) -> ModelReply:
     content = message.get("content")
     if content is not None and not isinstance(content, (str, list)):
         raise ModelError("Invalid assistant content")
-    calls = _calls(message)
+    return message, reason
+
+
+def _response_metadata(
+    observer: Callable[[dict[str, Any]], None] | None,
+    reason: str,
+    usage: Usage,
+) -> None:
+    if observer is None:
+        return
+    observer(
+        {
+            "stage": "response_metadata",
+            "finish_reason": reason,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cached_tokens": usage.cached_tokens,
+            },
+        }
+    )
+
+
+def _validate_finish_reason(reason: str, calls: tuple[ToolCall, ...], usage: Usage) -> None:
     if reason == "tool_calls" and not calls:
         raise ModelError("tool_calls finish_reason without tool calls")
-    return ModelReply(message, calls, _usage(body.get("usage")), reason)
+    if reason == "length":
+        raise ModelError("Model response was truncated; tool calls were not executed", usage)
+
+
+def _parse_reply(
+    body: dict[str, Any],
+    usage: Usage,
+    observer: Callable[[dict[str, Any]], None] | None,
+) -> ModelReply:
+    message, reason = _response_fields(_choice(body))
+    _response_metadata(observer, reason, usage)
+    calls = _calls(message)
+    _validate_finish_reason(reason, calls, usage)
+    return ModelReply(message, calls, usage, reason)
+
+
+def _reply(
+    response: httpx.Response,
+    observer: Callable[[dict[str, Any]], None] | None = None,
+) -> ModelReply:
+    body = _json_object(response.text, "Model response")
+    usage = _usage(body.get("usage"))
+    try:
+        return _parse_reply(body, usage, observer)
+    except ModelError as error:
+        if error.usage is None:
+            error.usage = usage
+        raise
 
 
 def _retry_delay(header: str | None, attempt: int) -> float:
@@ -230,25 +282,40 @@ class OpenAIModel:
             "top_p": self.config.top_p,
             "seed": self.config.seed,
         }
+        reasoning_effort = getattr(self.config, "reasoning_effort", None)
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if tools:
             payload["tools"] = tools
         with httpx.Client(timeout=self._timeout(), trust_env=False) as client:
             response = self._request(client, payload, key)
-        return _reply(response)
+        return _reply(response, lambda event: self._notify(**event))
 
     def _request(self, client: httpx.Client, payload: dict[str, Any], key: str) -> httpx.Response:
         attempt = redirects = 0
         url = self._url
         request_payload: dict[str, Any] | None = payload
+        request_started = time.perf_counter()
+        poll_duration = 0.0
         while True:
+            is_poll = request_payload is None
             response = self._send(client, url, request_payload, key, attempt)
+            response_duration = response.extensions.get("_coding_agent_duration_seconds", 0.0)
+            if not isinstance(response_duration, (int, float)):
+                response_duration = 0.0
+            if is_poll:
+                poll_duration += response_duration
             if response.status_code == 303:
                 if redirects >= _MAX_RESULT_REDIRECTS:
                     raise ModelError("Model result redirect limit exceeded")
                 url = _result_url(url, response.headers.get("Location"), self._url)
                 request_payload = None
                 redirects += 1
-                self._notify(stage="poll", redirect=redirects)
+                self._notify(
+                    stage="poll",
+                    redirect=redirects,
+                    poll_duration_seconds=poll_duration,
+                )
                 continue
             if response.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES:
                 delay = _retry_delay(response.headers.get("Retry-After"), attempt)
@@ -258,6 +325,13 @@ class OpenAIModel:
                 continue
             if response.status_code != 200:
                 raise ModelError(f"Model endpoint returned HTTP {response.status_code}")
+            self._notify(
+                stage="request_complete",
+                attempts=attempt + 1,
+                redirects=redirects,
+                duration_seconds=time.perf_counter() - request_started,
+                poll_duration_seconds=poll_duration,
+            )
             return response
 
     def _send(
@@ -269,6 +343,7 @@ class OpenAIModel:
         attempt: int,
     ) -> httpx.Response:
         self._notify(stage="request", attempt=attempt + 1)
+        started = time.perf_counter()
         try:
             response = client.request(
                 "POST" if payload is not None else "GET",
@@ -279,16 +354,31 @@ class OpenAIModel:
                 follow_redirects=False,
             )
         except _TRANSIENT_ERRORS:
-            self._notify(stage="transport_error", attempt=attempt + 1)
+            self._notify(
+                stage="transport_error",
+                attempt=attempt + 1,
+                duration_seconds=time.perf_counter() - started,
+            )
             if time.monotonic() >= self._deadline:
                 raise ModelDeadlineExceeded("Model request deadline exceeded") from None
             raise ModelError(
                 "Model transport failed; request usage is unknown. No automatic retry."
             ) from None
         except (httpx.HTTPError, ValueError, TypeError):
-            self._notify(stage="request_error", attempt=attempt + 1)
+            self._notify(
+                stage="request_error",
+                attempt=attempt + 1,
+                duration_seconds=time.perf_counter() - started,
+            )
             raise ModelError("Model request failed") from None
-        self._notify(stage="response", attempt=attempt + 1, http_status=response.status_code)
+        duration = time.perf_counter() - started
+        self._notify(
+            stage="response",
+            attempt=attempt + 1,
+            http_status=response.status_code,
+            duration_seconds=duration,
+        )
+        response.extensions["_coding_agent_duration_seconds"] = duration
         return response
 
 

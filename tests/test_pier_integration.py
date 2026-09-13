@@ -1,10 +1,12 @@
 """Real Pier trials with a local-only transport and deterministic model replies.
 
-No Docker, cloud, task downloads, real model calls, or git commits. The transport
-is a test double, not a sandbox: only this file's generated toy tasks may use it.
+The transport is a test double, not a sandbox: only this file's generated toy
+tasks may use it. The real Git fixture tests exercise commit and patch transfer
+without Docker, cloud, task downloads, or real model calls.
 """
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -20,6 +22,16 @@ from unittest.mock import AsyncMock, patch
 
 from coding_agent.model import ScriptedModel
 from coding_agent.types import ModelReply, ToolCall, Usage
+
+
+def run_git(*args, cwd=None, check=True):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
 
 
 class LocalTransport:
@@ -46,6 +58,7 @@ class LocalTransport:
         )
         self.daemons = []
         self.stopped = False
+        self.preserve_workspace = False
 
     async def start(self, force_build=False):
         self.events.append((self.role, "start"))
@@ -161,7 +174,8 @@ class LocalTransport:
                 shutil.rmtree(server_root, ignore_errors=True)
         self.stopped = True
         self.events.append((self.role, "stop", delete))
-        shutil.rmtree(self.workspace)
+        if not self.preserve_workspace:
+            shutil.rmtree(self.workspace)
 
 
 @unittest.skipUnless(
@@ -503,6 +517,249 @@ class PierIntegration(unittest.TestCase):
                 capture_output=True,
             )
             self.assertEqual((verifier_workspace / "answer").read_text(), "42\n")
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("pier") and importlib.util.find_spec("harbor"),
+    "optional Pier and Harbor SDK environment required",
+)
+class RealGitPierTrial(unittest.TestCase):
+    """Unmocked commit and separate-verifier trials over temporary Git repos."""
+
+    payload = b"\x00\xff\x10binary\x80\n"
+
+    def setUp(self):
+        self.environment_patch = patch.dict(os.environ, LITELLM_LOCAL_MODEL_COST_MAP="True")
+        self.environment_patch.start()
+        self.addCleanup(self.environment_patch.stop)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.settings = self.root / "agent.toml"
+        self.settings.write_text(
+            '[model]\nname="fixture/toy"\napi_key_env="PIER_TOY_UNUSED_KEY"\n'
+            '[run]\nmax_turns=3\nmax_seconds=30\nsupervision="off"\n'
+        )
+        self.events = []
+        self.backends = []
+
+    def backend_factory(self, **options):
+        role = "verifier" if options.get("mounts_json") else "agent"
+        backend = LocalTransport(self.root / role, options, self.events)
+        backend.preserve_workspace = True
+        self.backends.append(backend)
+        self._init_git_workspace(backend.workspace)
+        return backend
+
+    def _init_git_workspace(self, workspace):
+        run_git("init", "-b", "main", str(workspace))
+        (workspace / "baseline.txt").write_text("base\n")
+        run_git("-C", str(workspace), "add", "baseline.txt")
+        run_git(
+            "-C",
+            str(workspace),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "base",
+        )
+
+    def _payload_command(self):
+        encoded = self.payload.hex()
+        script = (
+            "from pathlib import Path; "
+            f"p=Path('payload.bin'); p.write_bytes(bytes.fromhex('{encoded}')); "
+            "p.chmod(0o755); Path('baseline.txt').write_text('changed\\n')"
+        )
+        return f"python3 -c {shlex.quote(script)}"
+
+    def make_git_config(self, *, behavior="submit", collection="success", grading="success"):
+        from pier.models.trial.config import TrialConfig
+
+        task = self.root / f"git-{behavior}-{collection}-{grading}"
+        (task / "environment").mkdir(parents=True)
+        (task / "tests").mkdir()
+        (task / "instruction.md").write_text(
+            "Write the binary payload, verify it, and submit the task."
+        )
+        artifact = self.root / "agent/logs/artifacts/model.patch"
+        if collection == "success":
+            collect = f"git diff --binary HEAD^ HEAD > {shlex.quote(str(artifact))}"
+        else:
+            collect = "exit 17"
+        test = self._verifier_script(grading, collection)
+        (task / "tests/test.sh").write_text(test)
+        (task / "task.toml").write_text(
+            'version="1.0"\n[agent]\ntimeout_sec=30\n'
+            '[verifier]\nenvironment_mode="separate"\ntimeout_sec=30\n'
+            f"[[verifier.collect]]\ncommand={json.dumps(collect)}\n"
+        )
+        return TrialConfig(
+            task={"path": task},
+            trials_dir=self.root / "trials",
+            trial_name=f"git-{behavior}-{collection}-{grading}",
+            agent={
+                "import_path": "integrations.pier_agent:AdaptiveAgent",
+                "kwargs": {
+                    "config": str(self.settings),
+                    "commit_patch": True,
+                },
+            },
+        )
+
+    def _verifier_script(self, grading, collection):
+        expected = self.payload.hex()
+        if grading == "failure":
+            return "#!/bin/sh\nset -eu\nexit 19\n"
+        if collection == "failure":
+            return (
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "if test -e ../logs/artifacts/model.patch; then exit 18; fi\n"
+                "echo 0 > ../logs/verifier/reward.txt\n"
+            )
+        check_payload = (
+            "from pathlib import Path; "
+            f"assert Path('payload.bin').read_bytes().hex() == '{expected}'"
+        )
+        return (
+            "#!/bin/sh\n"
+            "set -eu\n"
+            'test "$(cat baseline.txt)" = base\n'
+            "test ! -e payload.bin\n"
+            "git apply --binary ../logs/artifacts/model.patch\n"
+            'test "$(cat baseline.txt)" = changed\n'
+            "test -x payload.bin\n"
+            f"python3 -c {shlex.quote(check_payload)}\n"
+            "echo 1 > ../logs/verifier/reward.txt\n"
+        )
+
+    def _replies(self, behavior):
+        calls = [
+            ToolCall("write", "run_command", {"command": self._payload_command()}),
+        ]
+        if behavior == "commit-failure":
+            calls.append(ToolCall("lock", "run_command", {"command": "touch .git/index.lock"}))
+        if behavior == "submit":
+            calls.append(
+                ToolCall(
+                    "verify",
+                    "run_command",
+                    {"command": "test -f payload.bin", "verify": True},
+                )
+            )
+        if behavior in {"submit", "commit-failure"}:
+            calls.append(ToolCall("submit", "submit", {"summary": "binary patch verified"}))
+        return [
+            ModelReply(
+                {"role": "assistant", "content": None},
+                (call,),
+                Usage(6, 3),
+            )
+            for call in calls
+        ]
+
+    async def run_real_trial(self, config, behavior):
+        from pier.trial.trial import Trial
+
+        with (
+            patch(
+                "pier.trial.execution.EnvironmentFactory.create_environment_from_config",
+                side_effect=self.backend_factory,
+            ),
+            patch(
+                "integrations.harbor_agent.OpenAIModel",
+                return_value=ScriptedModel(self._replies(behavior)),
+            ),
+        ):
+            trial = await Trial.create(config)
+            try:
+                return trial, await trial.run()
+            finally:
+                for backend in self.backends:
+                    await backend.stop()
+                trial._close_logger_handler()
+                shutil.rmtree(trial._agent.root, ignore_errors=True)
+
+    def harness_result(self, trial):
+        return json.loads((trial.trial_dir / "agent/harness/result.json").read_text())
+
+    def test_real_trial_commits_binary_patch_and_grades_pristine_verifier(self):
+        trial, result = asyncio.run(self.run_real_trial(self.make_git_config(), "submit"))
+        self.assertIsNone(result.exception_info)
+        self.assertEqual(result.verifier_result.rewards, {"reward": 1.0})
+        self.assertEqual(self.harness_result(trial)["status"], "submitted")
+        agent, verifier = self.backends
+        commit_message = run_git(
+            "-C", str(agent.workspace), "log", "-1", "--format=%s"
+        ).stdout.strip()
+        self.assertEqual(commit_message, "Submit task patch")
+        patch_path = Path(verifier.env_paths.artifacts_dir) / "model.patch"
+        expected_patch = run_git(
+            "-C", str(agent.workspace), "diff", "--binary", "HEAD^", "HEAD"
+        ).stdout.encode()
+        self.assertEqual(
+            hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+            hashlib.sha256(expected_patch).hexdigest(),
+        )
+        self.assertTrue((verifier.workspace / "payload.bin").exists())
+        self.assertTrue((verifier.workspace / "payload.bin").stat().st_mode & 0o111)
+        self.assertEqual(
+            hashlib.sha256((verifier.workspace / "payload.bin").read_bytes()).hexdigest(),
+            hashlib.sha256(self.payload).hexdigest(),
+        )
+        self.assertEqual(
+            json.loads((trial.trial_dir / "agent/submission.json").read_text())["return_code"],
+            0,
+        )
+        self.assertTrue(all(backend.stopped for backend in self.backends))
+        self.assertTrue((trial.trial_dir / "result.json").exists())
+
+    def test_real_trial_budget_exhaustion_still_records_committed_patch(self):
+        self.settings.write_text(
+            '[model]\nname="fixture/toy"\napi_key_env="PIER_TOY_UNUSED_KEY"\n'
+            '[run]\nmax_turns=1\nmax_seconds=30\nsupervision="off"\n'
+        )
+        config = self.make_git_config(behavior="budget")
+        trial, result = asyncio.run(self.run_real_trial(config, "budget"))
+        self.assertIsNone(result.exception_info)
+        self.assertEqual(self.harness_result(trial)["status"], "budget_exhausted")
+        self.assertEqual(result.verifier_result.rewards, {"reward": 1.0})
+        self.assertEqual(
+            json.loads((trial.trial_dir / "agent/submission.json").read_text())["return_code"],
+            0,
+        )
+        self.assertTrue((trial.trial_dir / "artifacts/model.patch").exists())
+
+    def test_real_trial_commit_failure_is_reported_and_cleaned_up(self):
+        trial, result = asyncio.run(
+            self.run_real_trial(self.make_git_config(behavior="commit-failure"), "commit-failure")
+        )
+        self.assertIsNotNone(result.exception_info)
+        self.assertIn("commit", result.exception_info.exception_message.lower())
+        self.assertIsNone(result.verifier_result)
+        receipt = json.loads((trial.trial_dir / "agent/submission.json").read_text())
+        self.assertNotEqual(receipt["return_code"], 0)
+        self.assertTrue(all(backend.stopped for backend in self.backends))
+
+    def test_real_trial_collection_failure_is_recorded(self):
+        trial, result = asyncio.run(
+            self.run_real_trial(self.make_git_config(collection="failure"), "submit")
+        )
+        self.assertEqual(result.verifier_result.rewards, {"reward": 0.0})
+        self.assertFalse((trial.trial_dir / "artifacts/model.patch").exists())
+        self.assertTrue(all(backend.stopped for backend in self.backends))
+
+    def test_real_trial_grader_failure_is_recorded(self):
+        _, result = asyncio.run(
+            self.run_real_trial(self.make_git_config(grading="failure"), "submit")
+        )
+        self.assertIsNone(result.verifier_result)
+        self.assertIsNotNone(result.exception_info)
+        self.assertTrue(all(backend.stopped for backend in self.backends))
 
 
 if __name__ == "__main__":

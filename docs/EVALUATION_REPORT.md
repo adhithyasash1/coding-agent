@@ -1,9 +1,11 @@
 # Coding-agent evaluation report
 
-Status: 2026-09-07 continuation complete. Baseline and the frozen session08
+Status: 2026-09-09 local reliability milestone. Baseline and the frozen session08
 batch are preserved. Deadline, Pier, Terminal-Bench, SWE-bench, and one
 DeepSWE smoke were exercised under development limits. Owned Modal apps are
-stopped with zero running containers. These are not leaderboard scores.
+stopped with zero running containers in the saved September 7 shutdown evidence.
+No compute was launched or cloud status rechecked in this local milestone.
+These are not leaderboard scores. See [local implementation and limits](local-reliability.md).
 
 ## Results and what they mean
 
@@ -34,8 +36,10 @@ gRPC interruption remain in the record. Do not replace them with later retries.
 | tb21-dev-openssl-selfsigned-cert-06 | openssl-selfsigned-cert | 1 | Submitted; stdlib/OpenSSL only | 12 | 472.971 | 80,019 / 4,529 |
 | swe-dev-django-9296-07 | django__django-9296 | 1 | budget_exhausted; no submit | 16 | 840.316 | 279,247 / 7,194 |
 
-Completed trials report complete token accounting and **zero supervisor calls
-or interventions**. Cached-token fields are zero because the endpoint did not
+The three completed development trials in the table above report complete token
+accounting and **zero supervisor calls or interventions**. Later deadline/model-error
+trials below have incomplete accounting; their known token totals are lower bounds.
+Cached-token fields are zero because the endpoint did not
 expose detailed prefix-cache accounting.
 
 A separate invoice-repair smoke passed earlier (7 turns). Native tool-call
@@ -105,7 +109,8 @@ is older than 3.11, setup may install a private CPython under `/tmp/ca-*` via uv
 and use it only for that tool server.
 
 SWE-bench prediction export uses a temporary Git index. DeepSWE committed-patch
-submission is implemented and locally tested, not grader-validated.
+submission now passes local toy grading through pinned Pier's actual trial lifecycle.
+It has not passed the real DeepSWE task grader.
 
 ## Exact evaluation configuration
 
@@ -219,8 +224,10 @@ The remaining frozen SWE instances completed sequentially in
 `swe-dev-remaining-08` on unchanged source at `666dc37`. Astropy,
 pytest, and scikit-learn each ended at the wall boundary as `model_error`, with
 no verifier result. The job record reports three completed trials, three
-errors, and 815,593 input plus 34,259 output tokens. Their original traces,
-partial workspaces, interruptions, and unknown-usage reservations remain
+errors, and 815,593 input plus 34,259 output tokens in the job aggregate. Those
+reported totals exclude unknown usage. All three worker revision histories show
+no source changes. Their original traces, available tool-output artifacts,
+interruptions, and unknown-usage reservations remain
 untouched. This batch was not duplicated or edited during execution.
 
 Worker-only Django trace analysis found that context exposed remaining tokens but
@@ -233,11 +240,13 @@ was then applied and measured in session09 below; evidence is in the private
 deadline-candidate folder.
 
 Pier 0.3.1 is pinned to `df89f994623a0a6a57229103b6fe910766693c30` in a
-separate lockfile-created environment with Harbor 0.5.0. The adapter now has
-separate write, verify, and submit fixture calls plus a real temporary Git
-trial covering committed binary patch collection, pristine transfer, grading,
-commit failure, collection failure, budget exhaustion, and cleanup. Pier's
-original 13 SDK checks and eight Pier checks pass. DeepSWE task metadata at
+separate lockfile-created environment with Harbor 0.5.0. At the September 7
+checkpoint, eight Pier checks covered adapter behavior and a separate text-patch
+Git exercise; they did not yet combine inherited commit, real binary collection,
+transfer and grading in one actual trial. The 13 original Harbor SDK checks were
+separate. The September 9 milestone completes that local combined trial, including
+binary bytes, text and executable permissions; see the new validation record.
+DeepSWE task metadata at
 dataset commit `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea` parsed under this
 environment and declared `abs-module-cache-flags` alphabetically before the
 solver ran. The first launch failed before setup because the host import path
@@ -270,17 +279,20 @@ worker budget, and committed-patch collection. Label 01 is a preserved
 preflight import failure. Label 02 reached 17 turns and 771.301 seconds with
 296,528 input and 2,193 output tokens, then received HTTP 500 when the
 inference launcher expired. Pier therefore recorded `model_error`, no commit
-receipt, no verifier run, and no score. The local trajectory and partial
-workspace remain preserved; no reference solution or hidden tests entered the
+receipt, no verifier run, and no score. Its worker revision history shows no source
+changes. The local trajectory and available tool outputs remain preserved; a full
+workspace snapshot is not established by those artifacts. No reference solution or hidden tests entered the
 solver context.
 
 The allowed Astropy post-deadline check `swe-dev-deadline-astropy-11` ended at
 840.817 seconds as `budget_exhausted`, emitted one reminder at 751.818 seconds,
-and was graded separately with reward 0.0. The patch applied successfully, but
+and was graded separately with reward 0.0. The worker made no source changes.
+The grader's patch-application flag does not establish that the worker produced a
+nonempty patch. On the unchanged source,
 `astropy/utils/tests/test_misc.py::test_inherit_docstrings` remained failing;
 the other recorded checks passed. This confirms restored grading after a wall
 deadline while also showing that deadline handling does not improve an
-incomplete task patch by itself.
+run without a source change by itself. Its token accounting is incomplete.
 
 Final credentialed billing was $20.38 credits consumed and $22.18164059
 metered, with $0 billed and $1.80164059 free-storage adjustment. Five inference

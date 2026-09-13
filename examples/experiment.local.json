@@ -1,0 +1,40 @@
+{
+  "experiment_id": "local-rehearsal",
+  "owner": "replace-with-owner",
+  "workspace": "..",
+  "source_paths": ["src/coding_agent/experiment.py", "scripts/run_experiment.py"],
+  "tasks": [{"id": "task@sha256:replace", "dataset": "dataset@sha256:replace"}],
+  "image_pin": "image@sha256:replace",
+  "sdk_versions": {"python": "3.11", "runner": "1"},
+  "resources": {"gpu": "local-fake", "rate_usd_per_hour": 0},
+  "deadlines": {
+    "setup_seconds": 60,
+    "worker_seconds": 600,
+    "grader_seconds": 120,
+    "cleanup_seconds": 60
+  },
+  "inference": {
+    "provider": "local-fake",
+    "instance_id": "local-fake-instance",
+    "status_path": "status.json",
+    "startup_seconds": 0,
+    "warmup_seconds": 0,
+    "billing_lag_seconds": 0,
+    "status_max_age_seconds": 3153600000
+  },
+  "billing": {
+    "consumed_usd": 0,
+    "unreported_usd": 0,
+    "authenticated": true,
+    "attested_at": 0
+  },
+  "budget_usd": 24,
+  "reserve_usd": 2,
+  "lineage": {"parent_run_id": "manual"},
+  "commands": {
+    "setup": ["python3", "-c", "pass"],
+    "worker": ["python3", "-c", "pass"],
+    "grader": ["python3", "-c", "pass"],
+    "cleanup": ["python3", "-c", "pass"]
+  }
+}

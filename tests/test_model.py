@@ -8,6 +8,7 @@ import pytest
 
 from coding_agent.config import ModelConfig
 from coding_agent.model import ModelDeadlineExceeded, ModelError, OpenAIModel, _reply, _result_url
+from coding_agent.types import Usage
 
 
 def body(message=None):
@@ -46,6 +47,44 @@ def test_reasoning_message_preserved_and_missing_usage_rejected():
     del value["usage"]
     with pytest.raises(ModelError, match="Missing model usage"):
         _reply(httpx.Response(200, json=value))
+
+
+def test_truncated_tool_response_carries_validated_usage_and_rejects_calls():
+    message = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "1",
+                "type": "function",
+                "function": {"name": "edit_file", "arguments": '{"path":"marker.txt"}'},
+            }
+        ],
+    }
+    value = body(message)
+    value["choices"][0]["finish_reason"] = "length"
+    with pytest.raises(ModelError, match="truncated") as error:
+        _reply(httpx.Response(200, json=value))
+    assert error.value.usage == Usage(10, 5)
+
+
+def test_reasoning_effort_is_only_sent_when_configured(monkeypatch):
+    payloads = []
+
+    def send(request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json=body())
+
+    client_class = httpx.Client
+    monkeypatch.setattr(
+        "coding_agent.model.httpx.Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(send), **kwargs),
+    )
+    monkeypatch.setenv("AGENT_API_KEY", "dummy-private-key")
+    OpenAIModel(ModelConfig(name="org/model")).complete([], [], 100)
+    OpenAIModel(ModelConfig(name="org/model", reasoning_effort="high")).complete([], [], 100)
+    assert "reasoning_effort" not in payloads[0]
+    assert payloads[1]["reasoning_effort"] == "high"
 
 
 def test_real_http_client_auth_usage_and_deadline(monkeypatch):
@@ -162,6 +201,11 @@ def test_real_http_303_polls_existing_result_with_usage(redirect_server):
     assert requests[1][3] == b""
     assert "private-result-token" not in repr(events)
     assert "dummy-private-key" not in repr(events)
+    metadata = [event for event in events if event.get("stage") == "response_metadata"]
+    complete = [event for event in events if event.get("stage") == "request_complete"]
+    assert metadata[-1]["finish_reason"] == "stop"
+    assert complete[-1]["redirects"] == 1
+    assert complete[-1]["poll_duration_seconds"] >= 0
 
 
 @pytest.mark.parametrize(

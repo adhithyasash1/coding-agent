@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from coding_agent.config import EnvironmentConfig
 from coding_agent.toolset import WorkspaceTools
 from coding_agent.types import ToolCall
 
@@ -17,6 +18,10 @@ def dispatch(tools: WorkspaceTools, request: dict[str, Any]) -> Any:
         return tools.schemas()
     if operation == "revision":
         return tools.revision()
+    if operation == "environment":
+        settings = request.get("settings", {})
+        settings["test_entry_points"] = tuple(settings.get("test_entry_points", ()))
+        return tools.describe_environment(EnvironmentConfig(**settings))
     if operation == "execute":
         return asdict(tools.execute(ToolCall(**request["call"])))
     raise ValueError(f"Unknown operation: {operation}")

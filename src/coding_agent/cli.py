@@ -70,8 +70,10 @@ def _run(args: argparse.Namespace) -> int:
     secrets = _secrets(profiles)
     log = EventLog(trace_dir, secrets=secrets, observer=None if args.quiet else _progress)
     print(f"Trace: {trace_dir}", file=sys.stderr, flush=True)
+    tools = None
+    worker_started = False
     try:
-        model: Model = fixture_model(args.fixture) if args.fixture else OpenAIModel(config.model)
+        model = _worker_model(args, config.model)
         supervisor = OpenAIModel(config.supervisor_model) if config.supervisor_model else None
         tools = _tools(
             args,
@@ -89,16 +91,42 @@ def _run(args: argparse.Namespace) -> int:
             fixture=args.fixture is not None,
             provenance=provenance(),
         )
-        result = Agent(config, model, tools, log, supervisor).run(task)
-    except Exception as error:
-        result = {"status": "runtime_error", "detail": f"{type(error).__name__}: {error}"}
+        agent = Agent(config, model, tools, log, supervisor)
+        worker_started = True
+        result = agent.run(task)
+    except (Exception, KeyboardInterrupt) as error:
+        status = "interrupted" if isinstance(error, KeyboardInterrupt) else "runtime_error"
+        result = {
+            "status": status,
+            "detail": f"{type(error).__name__}: {error}",
+            "worker_status": "not_started" if not worker_started else "unknown",
+            "submission_status": "not_submitted",
+            "grader_status": None,
+            "reward": None,
+        }
         artifact = log.artifact("initialization-error.txt", traceback.format_exc())
         log.emit("initialization_failed", artifact=artifact, **result)
+        _cleanup_initialization(tools, worker_started, log)
+        tools = None
         log.finish(result)
     finally:
+        _cleanup_initialization(tools, worker_started, log)
         log.close()
     print(json.dumps(result, indent=2))
     return EXIT_CODES[result["status"]]
+
+
+def _cleanup_initialization(tools: Any, worker_started: bool, log: EventLog) -> None:
+    if tools is None or worker_started:
+        return
+    try:
+        tools.close()
+    except Exception as error:
+        log.emit("cleanup_failed", error=f"{type(error).__name__}: {error}")
+
+
+def _worker_model(args: argparse.Namespace, profile: ModelConfig) -> Model:
+    return fixture_model(args.fixture) if args.fixture else OpenAIModel(profile)
 
 
 def _secrets(profiles: list[ModelConfig]) -> tuple[str, ...]:

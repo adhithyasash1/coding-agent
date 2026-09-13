@@ -16,6 +16,7 @@ class AdaptiveAgent(HarborAdaptiveAgent, PierBaseAgent):
     """
 
     SUPPORTS_WINDOWS = False
+    BENCHMARK_BACKEND = "pier"
 
     def to_agent_info(self) -> AgentInfo:
         # Use the effective config even when Pier's optional model_name is absent.

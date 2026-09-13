@@ -1,6 +1,6 @@
 """Shared wire types. No execution or provider dependencies."""
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Protocol
 
 Message = dict[str, Any]
@@ -23,6 +23,14 @@ class ToolResult:
     artifact: str | None = None
     revision: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    artifact_id: str | None = None
+
+
+def worker_result(result: ToolResult) -> dict[str, Any]:
+    """Storage paths belong to the host trace, never the worker tool protocol."""
+    value = asdict(result)
+    value.pop("artifact")
+    return value
 
 
 @dataclass(frozen=True)

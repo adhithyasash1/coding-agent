@@ -1,12 +1,31 @@
 # Copy-paste handoff
 
 Continue the coding-agent project at `/Users/adhithyasash1/new-coding-agent`.
-Snapshot: 2026-09-07 after session09 shutdown. Earlier sections retain
-historical outcomes; the Immediate continuation section records the completed
-work. Modal resources, billing, saved results, and local traces were rechecked.
-Do not launch another paid evaluation without a new budget review.
+Snapshot: 2026-09-09 local reliability milestone. See
+[implemented behavior and limitations](local-reliability.md) and
+[acceptance evidence](validation.md). New generation, context, reasoning and
+supervision policies remain opt-in. This milestone launches no paid compute,
+upgrades no dependencies, exports no traces and pushes nothing. Earlier sections
+retain historical outcomes. The last cloud billing and shutdown check remains
+September 7; do not describe it as a fresh cloud check.
 
-## Immediate continuation - 2026-09-07 session 09
+## Local milestone and next boundary - 2026-09-09
+
+The local correctness and opt-in policy implementation is described in
+[local-reliability.md](local-reliability.md). Use the maintained runner's separate
+preflight and launch operations for future experiments. Preflight starts no compute;
+launch requires fresh readiness, lifetime, ownership and budget checks. Local
+acceptance uses scripted models and temporary transports, not the real DeepSWE image
+or task grader. Preserve the original Harbor 0.22.0 environment and the isolated
+Pier 0.3.1 / Harbor 0.5.0 environment and lockfile.
+
+Do not promote a behavioral default from the historical development retries.
+Next work is a separately authorized paid-validation milestone with fresh billing,
+new labels, matched environments, counterbalanced order and one mechanism changed
+per comparison. The last saved $20.38 consumed balance is historical and cannot
+admit another experiment by itself. No external trace export occurs in this milestone.
+
+## Historical continuation - 2026-09-07 session 09
 
 1. The frozen `swe-dev-remaining-08` job completed unchanged at source
    `666dc37`. Astropy, pytest, and scikit-learn each ended as `model_error` at
@@ -19,7 +38,7 @@ Do not launch another paid evaluation without a new budget review.
 3. Django label `swe-dev-deadline-django-10` graded reward 1.0 after wall
    exhaustion. Terminal-Bench label `tb21-dev-kv-store-grpc-09` graded reward
    1.0 and preserved its running service through grading. Astropy label
-   `swe-dev-deadline-astropy-11` graded reward 0.0; its patch applied, but
+   `swe-dev-deadline-astropy-11` graded reward 0.0 with no worker source changes;
    `test_inherit_docstrings` still failed.
 4. Pier 0.3.1 is pinned at `R/pier-source` commit
    `df89f994623a0a6a57229103b6fe910766693c30` with uv.lock SHA256
@@ -30,8 +49,9 @@ Do not launch another paid evaluation without a new budget review.
    `0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea`. Label 01 failed before setup due
    a host import path; label 02 ran under the corrected path but the inference
    launcher expired during a model request, so Pier recorded `model_error` with
-   no verifier score or commit receipt. Keep both labels and the local partial
-   workspace as evidence. No hidden tests or reference solution were supplied
+   no verifier score or commit receipt. Keep both labels, trajectories and available
+   tool outputs as evidence; these do not establish a saved full workspace snapshot.
+   No hidden tests or reference solution were supplied
    to the solver.
 6. Final credentialed billing is $20.38 credits consumed, $22.18164059 metered,
    $0 billed, with $1.80164059 free storage. The final container listing is
@@ -54,7 +74,7 @@ benchmark answers.
 
 ## Current source and architecture
 
-Current source commit: `12abd2b` (deadline context, global deadline
+Historical runtime source commit: `12abd2b` (deadline context, global deadline
 classification, create-only `edit_file`, private tool interpreter, and Pier
 adapter validation). Earlier: `c70d93c` create-only `edit_file` and private tool
 interpreter; `f086809` portable verification prompt and export recovery,
@@ -90,7 +110,7 @@ vLLM 0.28.0, one H100, qwen3_coder and qwen3 parsers. Run root
 - Deadline Django: reward 1.0 after `budget_exhausted`; one reminder and a
   preserved global-deadline failure event.
 - Terminal-Bench gRPC retry: reward 1.0, service preserved through grading.
-- Astropy post-deadline check: reward 0.0; patch applied, one F2P test failed.
+- Astropy post-deadline check: reward 0.0; no worker source changes, one F2P test failed.
 - DeepSWE `abs-module-cache-flags`: label 01 preflight import failure; label
   02 model_error at inference expiry, no score or commit receipt.
 - Outcomes: `R/outcomes.json`. Do not overwrite baseline trial directories.
@@ -117,11 +137,12 @@ H100 $3.95/hour. Persistent cache `adaptive-agent-model-cache` and secret
 `adaptive-agent-inference` are retained. All owned inference and evaluation
 apps are stopped, and the final credentialed container listing is empty.
 
-For a fresh session: copy `integrations/modal_inference.py` to
+Historical launch recipe, retained for provenance only: copy `integrations/modal_inference.py` to
 `R/inference/modal_inference.py`, then `R/detach.py` around the credential
 helper and `R/launch.py FRESH_LOG_NAME`. Warm with `R/smoke.py FRESH_LABEL`.
 No duplicate inference app. SWE launch helper: `R/run_swe.py LABEL`.
-TB retry helper: `R/run_retry.py LABEL TASK`.
+TB retry helper: `R/run_retry.py LABEL TASK`. Do not bypass the maintained runner's
+admission checks by invoking these historical scripts directly for a new paid run.
 
 ## Validation
 
@@ -132,3 +153,6 @@ passed, Pier checks 8 passed, original Harbor SDK checks 13 passed, and
 `git diff --check` passed. The isolated deadline candidate's selected tests
 also passed. Full local checks used the required socket and temporary Git
 permissions. `UV_CACHE_DIR=/private/tmp/coding-agent-uv`.
+
+The September 9 acceptance record supersedes those counts for current source and
+is recorded in [validation.md](validation.md). Historical results above are unchanged.

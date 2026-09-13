@@ -103,6 +103,9 @@ class HarborTools:
     def schemas(self):
         return self._schemas
 
+    def describe_environment(self, settings):
+        return self.rpc("environment", settings=asdict(settings))
+
     def execute(self, call: ToolCall) -> ToolResult:
         if call.name == "start_process" and call.arguments.get("timeout") is None:
             call = replace(
@@ -131,6 +134,8 @@ class HarborTools:
 
 
 class AdaptiveAgent(BaseAgent):
+    BENCHMARK_BACKEND = "harbor"
+
     def __init__(
         self,
         *args,
@@ -253,7 +258,7 @@ class AdaptiveAgent(BaseAgent):
         log = EventLog(self.logs_dir / "harness", secrets)
         log.emit(
             "environment",
-            backend="harbor",
+            backend=self.BENCHMARK_BACKEND,
             cleanup_strategy="sandbox_teardown_or_service_lifetime",
             service_lifetime_sec=self.service_lifetime_sec,
             workspace=self.workspace,

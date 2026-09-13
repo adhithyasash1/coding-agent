@@ -10,6 +10,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
 
+from coding_agent.config import EnvironmentConfig
 from coding_agent.types import Schema, ToolCall, ToolResult
 
 
@@ -134,6 +135,9 @@ class DockerTools:
 
     def schemas(self) -> list[Schema]:
         return self._schemas
+
+    def describe_environment(self, settings: EnvironmentConfig) -> dict[str, Any]:
+        return dict(self._rpc("environment", settings=asdict(settings)))
 
     def execute(self, call: ToolCall) -> ToolResult:
         result = ToolResult(**self._rpc("execute", call=asdict(call)))

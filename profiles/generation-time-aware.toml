@@ -1,0 +1,24 @@
+# Development experiment profile; no paid benefit demonstrated.
+[model]
+name = "Qwen/Qwen3.8-27B-FP8"
+base_url = "https://sashiradhithya--adaptive-coding-agent-inference-serve-dev.modal.run/v1"
+api_key_env = "AGENT_API_KEY"
+context_tokens = 131072
+max_output_tokens = 16384
+timeout = 300.0
+revision = "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a"
+temperature = 1.0
+top_p = 0.95
+seed = 0
+[run]
+max_turns = 80
+max_tokens = 2000000
+max_seconds = 840.0
+supervision = "on"
+max_interventions = 3
+supervisor_max_tokens = 4096
+supervisor_cooldown = 4
+repeat_threshold = 3
+command_timeout = 120.0
+require_verification = true
+generation_policy = "time_aware"

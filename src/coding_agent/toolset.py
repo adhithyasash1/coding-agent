@@ -6,14 +6,18 @@ import fnmatch
 import hashlib
 import os
 import re
+import shutil
 import stat
 import tempfile
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from coding_agent.artifacts import ArtifactStore
+from coding_agent.config import EnvironmentConfig
+from coding_agent.environment import discover
 from coding_agent.execution import ProcessRunner, bounded_text
 from coding_agent.types import Schema, ToolCall, ToolResult
 
@@ -118,6 +122,7 @@ class WorkspaceTools:
         if self.workspace.is_relative_to(self.artifacts):
             raise ValueError("artifacts must not contain the workspace")
         self.output_limit = output_limit
+        self._blocked_env = blocked_env
         self._runner = ProcessRunner(
             self.workspace,
             self.artifacts,
@@ -126,12 +131,15 @@ class WorkspaceTools:
             blocked_env=blocked_env,
         )
         self._closed = False
+        self._artifact_store = ArtifactStore(self.artifacts)
         self._handlers: dict[str, Callable[[dict[str, Any]], ToolResult]] = {
             "read_file": self._read_file,
             "list_files": self._list_files,
             "search": self._search,
             "edit_file": self._edit_file,
             "run_command": self._run_command,
+            "verify_command": self._verify_command,
+            "read_artifact": self._read_artifact,
             "start_process": self._start_process,
             "poll_process": self._poll_process,
             "write_process": self._write_process,
@@ -192,6 +200,28 @@ class WorkspaceTools:
                 ["command"],
             ),
             _schema(
+                "verify_command",
+                "Execute argv directly and record a check receipt. "
+                "Write, verify, then submit separately. Output is captured before shortening. "
+                "A passing check is not proof of task correctness.",
+                {
+                    "argv": {"type": "array", "items": dict(_STRING), "minItems": 1},
+                    "cwd": dict(_STRING),
+                    "timeout": dict(_TIMEOUT),
+                },
+                ["argv"],
+            ),
+            _schema(
+                "read_artifact",
+                "Read captured output by its trial-local artifact ID.",
+                {
+                    "artifact_id": dict(_STRING),
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 65536},
+                },
+                ["artifact_id"],
+            ),
+            _schema(
                 "start_process",
                 "Start a local shell process with pipe stdin and a deadline.",
                 command,
@@ -227,7 +257,7 @@ class WorkspaceTools:
             result = self._handlers[call.name](call.arguments)
             if result.revision is None:
                 result = replace(result, revision=self.revision())
-            return result
+            return self._register_output(result)
         except (OSError, ValueError, RuntimeError, re.error) as error:
             return self._output(f"{type(error).__name__}: {error}", error=True)
 
@@ -241,6 +271,23 @@ class WorkspaceTools:
             raise ValueError(
                 f"invalid arguments: unknown={sorted(unknown)}, missing={sorted(missing)}"
             )
+
+    def describe_environment(self, settings: EnvironmentConfig) -> dict[str, Any]:
+        return asdict(discover(self.workspace, settings, self._blocked_env))
+
+    def _register_output(self, result: ToolResult) -> ToolResult:
+        if result.artifact and result.artifact_id is None:
+            return replace(result, artifact_id=self._artifact_store.register(result.artifact))
+        return result
+
+    def _read_artifact(self, arguments: dict[str, Any]) -> ToolResult:
+        identity = _text(arguments, "artifact_id")
+        output, offset, eof = self._artifact_store.read(
+            identity, arguments.get("offset", 0), arguments.get("limit", self.output_limit)
+        )
+        return ToolResult(
+            "ok", output, artifact_id=identity, metadata={"next_offset": offset, "eof": eof}
+        )
 
     def _path(self, value: str) -> Path:
         path = (self.workspace / value).resolve()
@@ -287,10 +334,12 @@ class WorkspaceTools:
     def _output(self, text: str, *, error: bool = False) -> ToolResult:
         artifact = self.artifacts / f"tool-{uuid.uuid4().hex}.txt"
         artifact.write_text(text, encoding="utf-8")
-        return ToolResult(
-            status="error" if error else "ok",
-            output=bounded_text(text, self.output_limit),
-            artifact=str(artifact),
+        return self._register_output(
+            ToolResult(
+                status="error" if error else "ok",
+                output=bounded_text(text, self.output_limit),
+                artifact=str(artifact),
+            )
         )
 
     def _read_file(self, arguments: dict[str, Any]) -> ToolResult:
@@ -363,17 +412,45 @@ class WorkspaceTools:
 
     def _run_command(self, arguments: dict[str, Any]) -> ToolResult:
         verify = _boolean(arguments, "verify")
+        command = _text(arguments, "command")
+        if verify:
+            bash = shutil.which("bash")
+            if bash is None:
+                raise ValueError("Bash is unavailable. Use verify_command with an argument vector.")
+            return self._check([bash, "-e", "-o", "pipefail", "-c", command], arguments)
+        return self._runner.run(command, _timeout(arguments))
+
+    def _verify_command(self, arguments: dict[str, Any]) -> ToolResult:
+        argv = arguments["argv"]
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(v, str) and v for v in argv)
+        ):
+            raise ValueError("argv must be a nonempty array of nonempty strings")
+        return self._check(argv, arguments)
+
+    def _check(self, argv: list[str], arguments: dict[str, Any]) -> ToolResult:
         before = self.revision()
-        result = self._runner.run(_text(arguments, "command"), _timeout(arguments))
+        cwd = self._path(_text(arguments, "cwd", "."))
+        result = self._register_output(self._runner.run(argv, _timeout(arguments), cwd))
         after = self.revision()
+        receipt = {
+            "executable": result.metadata["executable"],
+            "argv": argv,
+            "cwd": str(cwd),
+            "exit_code": result.exit_code,
+            "elapsed_seconds": result.metadata["elapsed_seconds"],
+            "artifact_id": result.artifact_id,
+            "revision_before": before,
+            "revision_after": after,
+        }
         metadata = {
             **result.metadata,
             "revision_before": before,
             "revision_after": after,
-            "verification": verify
-            and result.status == "ok"
-            and result.exit_code == 0
-            and before == after,
+            "verification_receipt": receipt,
+            "verification": result.status == "ok" and result.exit_code == 0 and before == after,
         }
         return replace(result, revision=after, metadata=metadata)
 

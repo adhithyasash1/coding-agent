@@ -180,4 +180,3 @@ def test_reminder_never_allows_tools_at_or_after_deadline(tmp_path, monkeypatch,
     assert result["detail"] == "wall time limit reached"
     assert [e["call"]["id"] for e in events if e["kind"] == "tool_started"] == ["verify"]
     assert not (tmp_path / "work/late").exists()
-

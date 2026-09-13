@@ -26,6 +26,8 @@ class Context:
     groups: list[list[Message]] = field(default_factory=list)
     memory: str = ""
     dropped_groups: int = 0
+    layout: str = "legacy"
+    environment: str = ""
 
     def add(self, messages: list[Message]) -> None:
         """A complete assistant/tool exchange is indivisible."""
@@ -42,6 +44,9 @@ class Context:
             base = self._base()
         if estimate_tokens(base) > available:
             raise ContextOverflow("durable task state exceeds context allowance")
+        if self.layout == "history_first":
+            static_count = 3 if self.environment else 2
+            return base[:static_count] + self._flatten() + base[static_count:]
         return base + self._flatten()
 
     def _base(self) -> list[Message]:
@@ -49,6 +54,8 @@ class Context:
             {"role": "system", "content": self.system},
             {"role": "user", "content": self.task},
         ]
+        if self.environment:
+            base.append({"role": "user", "content": "Execution environment:\n" + self.environment})
         if self.memory or self.dropped_groups:
             base.append(
                 {

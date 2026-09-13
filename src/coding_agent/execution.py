@@ -9,9 +9,11 @@ from __future__ import annotations
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from contextlib import suppress
@@ -103,6 +105,11 @@ class _Process:
     timed_out: bool = False
     stopped: bool = False
     monitor: threading.Thread | None = None
+    started: float = field(default_factory=time.monotonic)
+    ended: float | None = None
+    executable: str = "/bin/sh"
+    cwd: str = ""
+    cleanup_error: str | None = None
 
 
 def _kill_group(child: subprocess.Popen[bytes]) -> None:
@@ -120,11 +127,29 @@ def _monitor(process: _Process) -> None:
             with process.lock:
                 process.timed_out = not process.stopped
             _kill_group(process.child)
-            process.child.wait()
+            process.child.wait(timeout=1)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        process.cleanup_error = f"{type(error).__name__}: {error}"
     finally:
+        _finish_process(process)
+
+
+def _finish_process(process: _Process) -> None:
+    """A cleanup exception must never strand callers waiting on finished."""
+    try:
         _kill_group(process.child)
+    except OSError as error:
+        process.cleanup_error = f"{type(error).__name__}: {error}"
+    try:
+        if process.child.poll() is None:
+            process.child.kill()
+        process.child.wait(timeout=1)
         if process.child.stdin is not None:
             process.child.stdin.close()
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        process.cleanup_error = f"{type(error).__name__}: {error}"
+    finally:
+        process.ended = time.monotonic()
         process.finished.set()
 
 
@@ -153,10 +178,12 @@ class ProcessRunner:
         self._processes: dict[str, _Process] = {}
         self._closed = False
 
-    def _spawn(self, command: str, timeout: float | None) -> _Process:
+    def _spawn(
+        self, command: str | list[str], timeout: float | None, cwd: Path | None = None
+    ) -> _Process:
         if self._closed:
             raise RuntimeError("process runner is closed")
-        if not command.strip():
+        if not command or (isinstance(command, str) and not command.strip()):
             raise ValueError("command must not be empty")
         duration = positive_timeout(self.timeout if timeout is None else timeout)
         process_id = uuid.uuid4().hex
@@ -164,9 +191,9 @@ class ProcessRunner:
         with artifact.open("xb") as output:
             child = subprocess.Popen(
                 command,
-                shell=True,
-                executable="/bin/sh",
-                cwd=self.workspace,
+                shell=isinstance(command, str),
+                executable="/bin/sh" if isinstance(command, str) else None,
+                cwd=cwd or self.workspace,
                 env=self._environment,
                 stdin=subprocess.PIPE,
                 stdout=output,
@@ -175,16 +202,27 @@ class ProcessRunner:
                 bufsize=0,
             )
         process = _Process(process_id, child, artifact, duration)
+        process.executable = self._executable(command, cwd or self.workspace)
+        process.cwd = str(cwd or self.workspace)
         self._processes[process.id] = process
         process.monitor = threading.Thread(target=_monitor, args=(process,), daemon=True)
         process.monitor.start()
         return process
 
+    def _executable(self, command: str | list[str], cwd: Path) -> str:
+        if isinstance(command, str):
+            return "/bin/sh"
+        if "/" in command[0]:
+            return str((cwd / command[0]).absolute())
+        return shutil.which(command[0], path=self._environment.get("PATH")) or command[0]
+
     def start(self, command: str, timeout: float | None = None) -> ToolResult:
         return self._result(self._spawn(command, timeout))
 
-    def run(self, command: str, timeout: float | None = None) -> ToolResult:
-        process = self._spawn(command, timeout)
+    def run(
+        self, command: str | list[str], timeout: float | None = None, cwd: Path | None = None
+    ) -> ToolResult:
+        process = self._spawn(command, timeout, cwd)
         # Synchronous commands cannot be interacted with. EOF also prevents
         # commands reading stdin from hanging until the deadline.
         if process.child.stdin is not None:
@@ -240,6 +278,8 @@ class ProcessRunner:
             status = "running"
             if finished:
                 status = "timeout" if process.timed_out else ("ok" if exit_code == 0 else "error")
+                if process.cleanup_error and status == "ok":
+                    status = "error"
             return ToolResult(
                 status=status,  # type: ignore[arg-type]
                 output=output,
@@ -252,6 +292,10 @@ class ProcessRunner:
                     "timed_out": process.timed_out,
                     "stopped": process.stopped,
                     "output_bytes": process.offset,
+                    "elapsed_seconds": (process.ended or time.monotonic()) - process.started,
+                    "executable": process.executable,
+                    "cwd": process.cwd,
+                    "cleanup_error": process.cleanup_error,
                 },
             )
 
